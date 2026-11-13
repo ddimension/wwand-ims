@@ -187,13 +187,17 @@ const VOICE = {
 			req: { call_events: { t: 0x13, f: 'u8' } },
 			resp: {},
 		},
-		// 0x10 call type: not in libqmi 1.38's Dial Call, but oFono's QMI
-		// voice driver sends it there as a u8 (qmimodem "implement voice
-		// calls", Alexander Couzens, 2017-07-25, as carried in pmaports);
-		// the values are libqmi's QmiVoiceCallType (VOICE 0, VOICE_IP 2)
+		// Beyond libqmi 1.38's 0x01 number, the Gobi API (2013-07-31,
+		// GobiConnectionMgmtAPIStructs.h, VoiceCallOriginate = service 9 /
+		// message 32) defines 0x10 call type (u8, eQMIVoiceCallTypes; also
+		// what oFono's QMI voice driver sends), 0x18 audio attribute and 0x19
+		// video attribute (64-bit masks: bit 0 TX, bit 1 RX). A stock Android
+		// RIL dials with audio 3 (TX|RX) and video 0 (OnePlus 8T, OOS 14,
+		// research/op8t-20261113).
 		DIAL_CALL: {
 			id: 0x0020,
-			req:  { number: { t: 0x01, f: 'string' }, call_type: { t: 0x10, f: 'u8' } },
+			req:  { number: { t: 0x01, f: 'string' }, call_type: { t: 0x10, f: 'u8' },
+			        audio: { t: 0x18, f: 'u64' }, video: { t: 0x19, f: 'u64' } },
 			resp: { id: { t: 0x10, f: 'u8' } },
 		},
 		END_CALL: {
@@ -328,7 +332,12 @@ const LTE_VOICE  = [ 'none', 'ims' ];		// libqmi names only these two
 const CALL_STATE = [ 'unknown', 'origination', 'incoming', 'conversation', 'cc_in_progress',
                      'alerting', 'hold', 'waiting', 'disconnecting', 'end', 'setup' ];
 const CALL_DIR   = [ 'unknown', 'mo', 'mt' ];
-const CALL_MODE  = [ 'unknown', 'cdma', 'gsm', 'umts', 'lte' ];
+// 0..4 as libqmi 1.38 names them; 5..7 from the Gobi API
+// (eQMIVoiceCallModes). The Gobi API calls 6 "Unknown", which libqmi uses
+// for 0, so 6 is named 'undetermined' here: the normal state while call
+// control runs, before the modem picks a domain (stock RIL capture,
+// research/op8t-20261113).
+const CALL_MODE  = [ 'unknown', 'cdma', 'gsm', 'umts', 'lte', 'tdscdma', 'undetermined', 'wlan' ];
 const CALL_TYPE  = { voice: 0, voice_ip: 2 };	// QmiVoiceCallType
 
 // TLVs libqmi does not define, as hex, for the log: measured, not decoded
@@ -747,7 +756,7 @@ function create(deps)
 				}
 
 				use(ref, cb, (s, done) => {
-					s.voice.request('DIAL_CALL', { number: num, call_type: ct }, (e, d) => {
+					s.voice.request('DIAL_CALL', { number: num, call_type: ct, audio: 3, video: 0 }, (e, d) => {
 						if (stale(e))
 							return done(null, null, true);
 

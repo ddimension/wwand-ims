@@ -45,6 +45,7 @@ let calls = tlv.unpack(P.VOICE.messages.ALL_CALL_STATUS_IND.ind,
 	T(0x01, u8(1) + u8(1) + u8(1) + u8(0) + u8(1) + u8(4) + u8(0) + u8(0)) +
 	T(0x10, u8(1) + u8(1) + u8(0) + u8(13) + '+491701234567'));
 let list = P.calls_of(calls);
+eq(P.calls_of({ calls: [ { id: 9, state: 4, direction: 1, mode: 6 } ] })[0].mode, 'undetermined', 'call mode 6 is named undetermined (Gobi API: Unknown)');
 eq(list, [ { id: 1, state: 'origination', direction: 'mo', mode: 'lte', number: '+491701234567',
              end_reason: null } ],
 	'voice call status: one MO call over LTE, number joined by id');
@@ -60,6 +61,10 @@ eq(tlv.pack(P.VOICE.messages.DIAL_CALL.req, { number: '+4912' }), T(0x01, '+4912
 	'voice dial: number TLV');
 eq(tlv.pack(P.VOICE.messages.DIAL_CALL.req, { number: '+4912', call_type: 2 }), T(0x01, '+4912') + T(0x10, u8(2)),
 	'voice dial: call type TLV 0x10 as u8');
+// audio/video attributes as the stock RIL sends them: 64-bit masks, TX|RX
+eq(tlv.pack(P.VOICE.messages.DIAL_CALL.req, { number: '+4912', audio: 3, video: 0 }),
+	T(0x01, '+4912') + T(0x18, u32(3) + u32(0)) + T(0x19, u32(0) + u32(0)),
+	'voice dial: audio 0x18 and video 0x19 attributes as u64');
 
 // PDC Load Config: 0x01 = type u32 (SOFTWARE = 1), u8-prefixed id, total
 // size u32, u16-prefixed chunk; then 0x10 token u32 (libqmi 1.38)

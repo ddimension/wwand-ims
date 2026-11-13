@@ -161,6 +161,29 @@ board routes the pins. On a PCIe-only board with a data SKU (FM350-GL,
 RM520N-GL) there is no audio path at all: the silicon, not the bus, is
 the limit.
 
+### 5.4 What the modem needs from the AP (checked 2026-11-13)
+
+The RG650E calls (research/rg650e-245/NOTES.md) and a stock Android RIL
+captured on a OnePlus 8T (research/op8t-20261113/FINDINGS.md) agree.
+
+| AP action | Needed | Source of the format | Evidence |
+|---|---|---|---|
+| IMS Set IMS Services Enabled Setting 0x008F, volte 0x10 = 1 | **yes**, once; the modem keeps it across resets | libqmi 1.38 | RG650E: without it every MO call is refused locally; with 0 IMS does not even register. 8T: the RIL sends 0x008F, the modem re-applies the stored state at bring-up |
+| further 0x008F fields (UT, SMS, USSD, service) | no; the MBN's values stand | libqmi 1.38 | RG650E: calls with volte alone |
+| TLV 0x12 in 0x008F | no; not in the public message | – | 8T RIL never sends it |
+| Voice Bind Subscription 0x0044 | no | Gobi API | RG650E: calls without; 8T RIL: never sent |
+| Dial Call 0x20: number with `+`, call type 0x10 = 0 (voice), audio 0x18 = TX\|RX, video 0x19 = 0 | sent like this since 2026-11-13 | Gobi API | 8T RIL dials exactly so; the RG650E calls the same with or without the attributes |
+
+- **Call mode 6:** the normal first state of a call: "undetermined", the
+  Gobi API's "Unknown". It is followed by mode 4 (LTE) once call control
+  is done.
+- **IMS services at bring-up:** they are reported disabled first and
+  re-enabled within about a second with no AP request (8T). sipd must not
+  treat that flap as a lost registration.
+- **What is not the AP's job:** the dedicated QCI 1 bearer. On the GDSP SIM
+  the network never sets it up and the IMS core aborts every call with
+  `503 … ASR …`, MO and MT alike (NOTES.md, 2026-11-13 15:50–16:44 UTC).
+
 ## 6. Test device
 
 The Chateau's RG650E (newest firmware and MBNs, QMI). The GDSP SIM needs
