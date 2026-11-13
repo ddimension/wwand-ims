@@ -408,6 +408,29 @@ function create(deps)
 		return st[ref];
 	};
 
+	// several requests at once, one answer: { name: [err, data] }
+	let all = (reqs, cb) => {
+		let out = {}, left = length(reqs);
+
+		if (!left)
+			return cb(out);
+
+		// one function call per request: a `for (let r in ...)` closure does
+		// NOT get its own binding per pass in ucode, so callbacks that run
+		// later (every real QMI answer) would all see the last request
+		let ask = (name, cl, msg) => cl.request(msg, {}, (e, d) => {
+			out[name] = [ e, d ];
+			if (--left == 0)
+				cb(out);
+		});
+
+		for (let r in reqs)
+			ask(r[0], r[1], r[2]);
+	};
+
+	// the QMI error code where there is one (client.uc: { error: 'qmi', code })
+	let err_of = (e) => e ? (e.code ?? e.error ?? 'error') : null;
+
 	// indications: kept so status() can answer without I/O
 	let install = (ref, s, done) => {
 		s.imsa.on('REG_STATUS_IND', (d) => {
@@ -468,7 +491,17 @@ function create(deps)
 			// carrier configuration has them
 			s.ims.request('SET_SERVICE_ENABLE', { volte: 1 }, (e) => log(e ? 'warn' : 'info', sprintf('ims %s: volte enable %s', ref,
 				e ? sprintf('refused (%s)', err_of(e)) : 'sent')));
-			done();
+			// The indications report changes only: on new clients (a daemon
+			// start, the reopen after a modem reset) nothing arrives while the
+			// state holds, and status() would show nothing, or the state from
+			// before the reset. Read it once here.
+			all([ [ 'reg', s.imsa, 'GET_REG_STATUS' ], [ 'svc', s.imsa, 'GET_SERVICES_STATUS' ] ], (r) => {
+				if (!r.reg[0])
+					s.reg = r.reg[1];
+				if (!r.svc[0])
+					s.services = r.svc[1];
+				done();
+			});
 		}));
 		s.voice.request('INDICATION_REGISTER', { call_events: 1 }, () => null);
 	};
@@ -527,33 +560,19 @@ function create(deps)
 		step(0);
 	};
 
-	// several requests at once, one answer: { name: [err, data] }
-	let all = (reqs, cb) => {
-		let out = {}, left = length(reqs);
-
-		if (!left)
-			return cb(out);
-
-		// one function call per request: a `for (let r in ...)` closure does
-		// NOT get its own binding per pass in ucode, so callbacks that run
-		// later (every real QMI answer) would all see the last request
-		let ask = (name, cl, msg) => cl.request(msg, {}, (e, d) => {
-			out[name] = [ e, d ];
-			if (--left == 0)
-				cb(out);
-		});
-
-		for (let r in reqs)
-			ask(r[0], r[1], r[2]);
-	};
-
-	// the QMI error code where there is one (client.uc: { error: 'qmi', code })
-	let err_of = (e) => e ? (e.code ?? e.error ?? 'error') : null;
-
 	// A modem reset closes the channel under the clients we keep, and every
 	// request on them then ends as `cancelled` (HW-observed after a modem
 	// reset on the RG650E, 2026-11-13). Drop them and open new ones, once.
 	let stale = (e) => e?.error == 'cancelled';
+	// The same reset seen without asking: the modem's teardown marks every
+	// plugin client `destroyed` (wwand modem.uc extra_client). tick() looks
+	// at this, so no QMI traffic is needed to notice.
+	let dead = (s) => length(filter([ 'imsa', 'ims', 'nas', 'voice' ], (k) => s[k]?.destroyed)) > 0;
+	// What was read on the old clients describes a modem that has since
+	// restarted, so it goes with them. A call that was up is gone with the
+	// reset, and sipd learns that from an empty call list (it ends every
+	// call the list does not hold): without it the LAN phone stays in a
+	// call nobody will end.
 	let drop = (ref) => {
 		let s = st[ref];
 
@@ -565,6 +584,12 @@ function create(deps)
 				s[k] = null;
 			}
 		s.ready = false;
+		s.reg = null;
+		s.services = null;
+		if (length(filter(s.calls ?? [], (c) => c.state != 'end'))) {
+			s.calls = [];
+			emit('wwand.ims.call', { modem: ref, calls: [] });
+		}
 	};
 	// body(s, done): done(err, result) or done(null, null, true) for stale
 	let use = (ref, cb, body) => {
@@ -645,6 +670,39 @@ function create(deps)
 	});
 
 	return {
+		// Keeps the clients open, so the indications (and with them the
+		// wwand.ims.* events sipd rings phones on) run from the daemon start
+		// and come back after a modem reset, without anyone calling an op.
+		// A modem without IMS (no IMSA in its service list, or NCM) is not
+		// asked again.
+		tick: (ref, ext) => {
+			let s = st[ref];
+
+			if (s?.no_ims || s?.opening || (s?.ready && !dead(s)))
+				return;
+			// at once, not when the modem is back: the call-gone event must
+			// not wait for a modem that may take a minute to return
+			if (s?.ready) {
+				log('info', sprintf('ims %s: the modem restarted under the clients, opening new ones once it is ready', ref));
+				drop(ref);
+			}
+			// Before READY the modem has not read its service list yet, and
+			// every client is refused as service_unavailable: taken as final,
+			// that would switch IMS off for good on every daemon start
+			// (HW-observed on the RG650E, 2026-11-13: the first tick ran
+			// before the modem's init).
+			if (deps.modem_of && deps.modem_of(ref)?.modem?.state != 'READY')
+				return;
+			open(ref, (err) => {
+				let why = err?.detail?.error;
+
+				if (why == 'service_unavailable' || why == 'unsupported') {
+					state_of(ref).no_ims = why;
+					log('info', sprintf('ims %s: no IMS on this modem (%s: %s)', ref, err.service, why));
+				}
+			});
+		},
+
 		status: (ref) => {
 			let s = st[ref];
 

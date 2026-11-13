@@ -205,6 +205,95 @@ flush();
 eq(calls_r, { calls: [] }, 'stale clients: answered after one reopen');
 eq(length(opened), 8, 'stale clients: four new clients opened');
 
+// tick: keeps the clients open without any op, and reopens them after a
+// modem reset (the teardown marks them destroyed)
+answers.GET_ALL_CALL_INFO = { calls: [] };
+answers.GET_SERVICES_STATUS = { sms: 2, voice: 2, sms_tech: 1, voice_tech: 1 };
+let clients3 = [], events3 = [], opened3 = 0;
+let inst3 = P.create({
+	log: () => null,
+	event: (type, data) => push(events3, [ type, data ]),
+	qmi_client: (ref, schema, cb) => {
+		opened3++;
+		let c = fake(schema);
+		push(clients3, c);
+		cb(null, c);
+	},
+	qmi_release: () => null,
+});
+inst3.tick('m3', {});
+flush();
+eq(opened3, 4, 'tick: opens the four clients with no op called');
+eq(inst3.status('m3').text, 'registered, voice available', 'tick: the state is read once on open');
+inst3.tick('m3', {});
+flush();
+eq(opened3, 4, 'tick: open clients are kept');
+
+handlers.ALL_CALL_STATUS_IND({ calls: [ { id: 4, state: 3, type: 0, direction: 1, mode: 4, mpty: 0, als: 0 } ] });
+for (let c in clients3)
+	c.destroyed = true;
+answers.GET_REG_STATUS = { status: 0 };
+events3 = [];
+inst3.tick('m3', {});
+eq(events3[0], [ 'wwand.ims.call', { modem: 'm3', calls: [] } ],
+	'tick after a reset: the call that was up is reported gone');
+flush();
+eq(opened3, 8, 'tick after a reset: four new clients');
+eq(inst3.status('m3').text, 'not_registered, voice available', 'tick after a reset: the state is read anew');
+answers.GET_REG_STATUS = { status: 2, tech: 1 };
+
+let asked4 = 0;
+let inst4 = P.create({
+	log: () => null,
+	qmi_client: (ref, schema, cb) => { asked4++; cb({ error: 'service_unavailable' }, null); },
+	qmi_release: () => null,
+});
+inst4.tick('m4', {});
+inst4.tick('m4', {});
+eq(asked4, 1, 'tick: a modem without IMSA is asked once');
+eq(inst4.status('m4'), null, 'tick: and has no status row');
+
+// a refused VoLTE switch on open is logged, the open still completes
+let logs6 = [], st6 = null;
+let inst6 = P.create({
+	log: (lv, msg) => push(logs6, msg),
+	qmi_client: (ref, schema, cb) => cb(null, {
+		on: () => null,
+		request: (name, args, cb2) => (name == 'SET_SERVICE_ENABLE')
+			? cb2({ error: 'qmi', code: 71 }, null) : cb2(null, answers[name] ?? {}),
+	}),
+	qmi_release: () => null,
+});
+inst6.ops.status('m6', {}, {}, (e, r) => st6 = r);
+ok(length(filter(logs6, (m) => index(m, 'volte enable refused (71)') >= 0)) == 1,
+	'open: a refused VoLTE switch is logged with its QMI error');
+eq(st6?.registration?.status, 'registered', 'open: and the op still answers');
+
+// no client before the modem is READY: its service list is not read yet,
+// and a refusal then must not count as "no IMS"
+let state7 = 'INIT_TRANSPORT', asked7 = 0;
+let inst7 = P.create({
+	log: () => null,
+	modem_of: (ref) => ({ modem: { state: state7 } }),
+	qmi_client: (ref, schema, cb) => { asked7++; cb({ error: 'service_unavailable' }, null); },
+	qmi_release: () => null,
+});
+inst7.tick('m7', {});
+eq(asked7, 0, 'tick: nothing is opened before the modem is READY');
+state7 = 'READY';
+inst7.tick('m7', {});
+eq(asked7, 1, 'tick: opened once the modem is READY');
+
+let asked5 = 0;
+let inst5 = P.create({
+	log: () => null,
+	qmi_client: (ref, schema, cb) => { asked5++; cb({ error: 'not_ready' }, null); },
+	qmi_release: () => null,
+});
+inst5.tick('m5', {});
+inst5.tick('m5', {});
+eq(asked5, 2, 'tick: a modem that is not ready is asked again');
+
 released = 0;
 inst.stop();
 eq(released, 4, 'stop: every client released');
