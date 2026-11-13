@@ -204,15 +204,6 @@ const VOICE = {
 			req: { call_events: { t: 0x13, f: 'u8' } },
 			resp: {},
 		},
-		// Vendor IDL voice_v02 0x0044: bind the client to a subscription
-		// (PRIMARY 0 / SECONDARY 1 / TERTIARY 2), mandatory field subs_type.
-		// On a DSDS modem an unbound voice client has no user context, and
-		// the dial dies in the modem's own bridge with InvalidArgument (48).
-		BIND_SUBSCRIPTION: {
-			id: 0x0044,
-			req: { subs_type: { t: 0x01, f: 'u8' } },
-			resp: {},
-		},
 		// 0x10 call type: not in libqmi 1.38's Dial Call, but oFono's QMI
 		// voice driver sends it there as a u8 (qmimodem "implement voice
 		// calls", Alexander Couzens, 2017-07-25, as carried in pmaports);
@@ -454,11 +445,6 @@ function create(deps)
 			done();
 		}));
 		s.voice.request('INDICATION_REGISTER', { call_events: 1 }, () => null);
-		// the voice client must own a subscription on a DSDS modem, or every
-		// dial dies inside the modem's QMI/AT bridge (InvalidArgument)
-		s.voice.request('BIND_SUBSCRIPTION', { subs_type: 0 }, (e) =>
-			log(e ? 'warn' : 'info', sprintf('ims %s: voice subs bind %s', ref,
-				e ? sprintf('refused (%s)', err_of(e)) : 'primary 0')));
 	};
 
 	// Open the four clients once per modem and keep them: the indications
