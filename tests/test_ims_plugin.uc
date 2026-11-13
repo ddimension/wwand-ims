@@ -45,8 +45,15 @@ let calls = tlv.unpack(P.VOICE.messages.ALL_CALL_STATUS_IND.ind,
 	T(0x01, u8(1) + u8(1) + u8(1) + u8(0) + u8(1) + u8(4) + u8(0) + u8(0)) +
 	T(0x10, u8(1) + u8(1) + u8(0) + u8(13) + '+491701234567'));
 let list = P.calls_of(calls);
-eq(list, [ { id: 1, state: 'origination', direction: 'mo', mode: 'lte', number: '+491701234567' } ],
+eq(list, [ { id: 1, state: 'origination', direction: 'mo', mode: 'lte', number: '+491701234567',
+             end_reason: null } ],
 	'voice call status: one MO call over LTE, number joined by id');
+
+// 0x14 call end reason (Gobi API): u8 count, then per call id u8 + reason u16
+let ended = tlv.unpack(P.VOICE.messages.ALL_CALL_STATUS_IND.ind,
+	T(0x01, u8(1) + u8(1) + u8(9) + u8(0) + u8(1) + u8(4) + u8(0) + u8(0)) +
+	T(0x14, u8(1) + u8(1) + u16(21)));
+eq(P.calls_of(ended)[0].end_reason, 21, 'voice call status: end reason joined by id, as a number');
 
 // Dial Call request: 0x01 the number as a whole-TLV string
 eq(tlv.pack(P.VOICE.messages.DIAL_CALL.req, { number: '+4912' }), T(0x01, '+4912'),
@@ -100,17 +107,20 @@ let flush = () => {
 		p();
 	}
 };
+let handlers = {};
 let fake = (schema) => ({
 	schema: schema,
-	on: () => null,
+	on: (name, fn) => { handlers[name] = fn; },
 	request: (name, args, cb) => {
 		push(sent, name);
 		push(pending, () => cb(null, answers[name] ?? {}));
 	},
 });
 
+let events = [];
 let inst = P.create({
 	log: () => null,
+	event: (type, data) => push(events, [ type, data ]),
 	qmi_client: (ref, schema, cb) => { push(opened, schema.service); cb(null, fake(schema)); },
 	qmi_release: () => released++,
 });
@@ -123,6 +133,16 @@ eq(st.registration.status, 'registered', 'status: registration');
 eq(st.services.voice, 'unavailable', 'status: voice service');
 eq(st.network.ims_voice, 0, 'status: network ims voice support');
 eq(inst.status('m0').text, 'registered, voice unavailable', 'status row from the cache');
+
+// indications become ubus events for the SIP side
+handlers.ALL_CALL_STATUS_IND({ calls: [ { id: 2, state: 2, type: 0, direction: 2, mode: 4, mpty: 0, als: 0 } ],
+                               remote: [ { id: 2, pi: 0, number: '+4930123' } ] });
+eq(events[length(events) - 1], [ 'wwand.ims.call', { modem: 'm0', calls: [
+	{ id: 2, state: 'incoming', direction: 'mt', mode: 'lte', number: '+4930123', end_reason: null } ] } ],
+	'event: an incoming call is published as wwand.ims.call');
+handlers.REG_STATUS_IND({ status: 0 });
+eq(events[length(events) - 1], [ 'wwand.ims.registration', { modem: 'm0', status: 'not_registered', voice: 'unavailable' } ],
+	'event: a registration change is published');
 
 let dial = null;
 inst.ops.dial('m0', {}, { number: '+491701234567' }, (e, r) => dial = r);

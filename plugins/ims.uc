@@ -20,6 +20,7 @@
 'use strict';
 
 import * as uloop from 'uloop';
+import * as ubus from 'ubus';
 import * as fs from 'fs';
 
 // ---- schemas (libqmi 1.38)---------------------------------------------
@@ -205,11 +206,18 @@ const VOICE = {
 			req:  { id: { t: 0x01, f: 'u8' } },
 			resp: { id: { t: 0x10, f: 'u8' } },
 		},
+		// 0x14 call end reason: not in libqmi 1.38; the Gobi API
+		// (2013-07-31, GobiConnectionMgmtAPIStructs.h
+		// sVoiceAllCallStatusIndication_CallEndReason) has it as a count
+		// and per call { id u8, reason u16 }. The reason values of that
+		// 2013 table are not trusted for current firmware: passed on as
+		// numbers, never named.
 		ALL_CALL_STATUS_IND: {
 			id: 0x002E,
 			ind: {
 				calls:  { t: 0x01, f: CALL_INFO_F },
 				remote: { t: 0x10, f: REMOTE_F },
+				ends:   { t: 0x14, f: { n: 'u8', of: { id: 'u8', reason: 'u16' } } },
 			},
 		},
 		GET_ALL_CALL_INFO: {
@@ -342,10 +350,12 @@ function name_of(table, v)
 // one call list from the Voice call TLVs: the number joined by call id
 function calls_of(d)
 {
-	let nums = {};
+	let nums = {}, ends = {};
 
 	for (let r in (d?.remote ?? []))
 		nums[sprintf('%d', r.id)] = r.number;
+	for (let e in (d?.ends ?? []))
+		ends[sprintf('%d', e.id)] = e.reason;
 
 	return map(d?.calls ?? [], (c) => ({
 		id: c.id,
@@ -354,6 +364,7 @@ function calls_of(d)
 		// lte = the call runs over IMS; gsm/umts = it went to CS
 		mode: name_of(CALL_MODE, c.mode),
 		number: nums[sprintf('%d', c.id)] ?? null,
+		end_reason: ends[sprintf('%d', c.id)] ?? null,
 	}));
 }
 
@@ -362,6 +373,25 @@ function create(deps)
 	let log = deps.log;
 	// per modem: { imsa, ims, nas, voice, reg, services, calls, opening }
 	let st = {};
+
+	// ubus events for the SIP side (sipd): the plugin API has no event
+	// hook, so the plugin keeps its own bus connection. deps.event replaces
+	// it in tests.
+	//   wwand.ims.call          { modem, calls: [ … ] }   every call change
+	//   wwand.ims.registration  { modem, status, voice }  IMS state change
+	let bus = null;
+	let emit = (type, data) => {
+		if (deps.event)
+			return deps.event(type, data);
+		try {
+			if (!bus)
+				bus = ubus.connect();
+			bus?.event(type, data);
+		}
+		catch (e) {
+			bus = null;
+		}
+	};
 
 	let state_of = (ref) => {
 		if (!st[ref])
@@ -373,16 +403,21 @@ function create(deps)
 	let install = (ref, s, done) => {
 		s.imsa.on('REG_STATUS_IND', (d) => {
 			s.reg = { ...(s.reg ?? {}), ...d };
+			emit('wwand.ims.registration', { modem: ref, status: name_of(REG_STATUS, s.reg.status),
+				voice: name_of(SERVICE, s.services?.voice) });
 			log('info', sprintf('ims %s: registration %s%s', ref, name_of(REG_STATUS, d.status) ?? '?',
 				d.err_code ? sprintf(' (error %d%s)', d.err_code, d.err_msg ? ': ' + d.err_msg : '') : ''));
 		});
 		s.imsa.on('SERVICES_STATUS_IND', (d) => {
 			s.services = { ...(s.services ?? {}), ...d };
+			emit('wwand.ims.registration', { modem: ref, status: name_of(REG_STATUS, s.reg?.status),
+				voice: name_of(SERVICE, s.services.voice) });
 			log('info', sprintf('ims %s: services sms %s, voice %s', ref,
 				name_of(SERVICE, s.services.sms) ?? '?', name_of(SERVICE, s.services.voice) ?? '?'));
 		});
 		s.voice.on('ALL_CALL_STATUS_IND', (d) => {
 			s.calls = calls_of(d);
+			emit('wwand.ims.call', { modem: ref, calls: s.calls });
 			let raw = raw_of(d);
 			if (raw)
 				log('info', sprintf('ims %s: call status raw %J', ref, raw));

@@ -4,7 +4,8 @@
 # Hardware test of the ims plugin, run from a workstation: reset the modem
 # (so nothing the plugin set earlier survives in it), wait until IMS is
 # registered with voice available, dial NUMBER through the plugin, and pass
-# once the call reaches the network's ringing state over LTE. Hangs up
+# once the call reaches the network's ringing state over LTE (the plugin's
+# wwand.ims.call events; the network may still end it right after). Hangs up
 # after a few seconds either way. The callee's phone rings briefly.
 #
 # Prints one line per step and ends with PASS or FAIL (exit 0 / 1).
@@ -40,6 +41,13 @@ say "ims $reg, voice $voice"
 # open (triggered by the status call above) a re-registration to land in
 sleep 15
 
+# the plugin's wwand.ims.call events show every state, even one that lasts
+# less than a poll interval (a call the network ends right after 180 Ringing)
+ev=/tmp/calltest.$$
+timeout 30 ubus listen wwand.ims.call > $ev 2>/dev/null &
+lp=$!
+sleep 1
+
 say "dial $num"
 d=$(p dial "{\"number\":\"$num\"}")
 id=$(echo "$d" | jsonfilter -e '@.id' 2>/dev/null)
@@ -49,19 +57,19 @@ res=FAIL
 if [ -n "$id" ]; then
 	for i in $(seq 1 10); do
 		sleep 2
-		c=$(p calls '{}' | jsonfilter -e "@.calls[@.id=$id]" 2>/dev/null)
-		st=$(echo "$c" | jsonfilter -e '@.state' 2>/dev/null)
-		md=$(echo "$c" | jsonfilter -e '@.mode' 2>/dev/null)
-		say "call $id $st over $md"
-		case "$st" in
-			alerting|conversation) [ "$md" = lte ] && { res=PASS; break; } ;;
-			end|'') break ;;
-		esac
+		grep -q '"state":"alerting","direction":"mo","mode":"lte"' $ev && res=PASS
+		grep -q '"state":"conversation"' $ev && res=PASS
+		grep -q '"state":"end"' $ev && break
+		[ $res = PASS ] && break
 	done
+	sed -n 's/.*"state":"\([a-z_]*\)".*"mode":"\([a-z0-9]*\)".*"end_reason":\([0-9a-z]*\).*/\1 over \2 (end reason \3)/p' $ev |
+		uniq | while read -r l; do say "call $id $l"; done
 	sleep 3
 	p hangup "{\"id\":$id}" >/dev/null 2>&1
 	say "hangup"
 fi
+kill $lp 2>/dev/null
+rm -f $ev
 
 say "$res"
 [ "$res" = PASS ]
