@@ -75,14 +75,6 @@ const IMSA = {
 			req: { binding: { t: 0x10, f: 'u32' } },
 			resp: {},
 		},
-		// Vendor IDL (ip_multimedia_subsystem_application_v01.c): Get IMS
-		// Block Status 0x0037, 0x10/0x11/0x12 failure on WWAN/WLAN/C-IWLAN
-		// (aggregates; kept raw)
-		GET_BLOCK_STATUS: {
-			id: 0x0037,
-			req: {},
-			resp: {},
-		},
 		SERVICES_STATUS_IND: {
 			id: 0x0024,
 			ind: {
@@ -118,17 +110,6 @@ const IMS = {
 				ut:        { t: 0x19, f: 'u8' },
 				sms:       { t: 0x1A, f: 'u8' },
 				ussd:      { t: 0x1C, f: 'u8' },
-			},
-		},
-		// Vendor IDL (ip_multimedia_subsystem_settings_v01.c): Get QIPCall
-		// Config 0x0037, 0x12 mobile_data_enabled, 0x13 volte_enabled
-		GET_QIPCALL: {
-			id: 0x0037,
-			req: {},
-			resp: {
-				vt:          { t: 0x11, f: 'u8' },
-				mobile_data: { t: 0x12, f: 'u8' },
-				volte:       { t: 0x13, f: 'u8' },
 			},
 		},
 		// Set IMS Services Enabled Setting 0x008F (libqmi 1.38
@@ -167,16 +148,17 @@ const NAS = {
 				voice_domain: { t: 0x2A, f: 'u32' },	// QmiNasLteVoiceDomain
 			},
 		},
-		// Vendor IDL (network_access_service_v01.c): Get IMS Preference
-		// Status 0x0073, 0x10 ims_pref = sys_mode (1-byte enum) + call-type
-		// mask u64 (VOICE 0x01, SMS 0x02). What the call manager thinks IMS
-		// may carry, as opposed to what IMSA reports.
+		// Get IMS Preference 0x0073 (Gobi API 2013-07-31, QMIEnum.h
+		// eQMI_NAS_GET_IMS_PREFERENCE // 115; GobiConnectionMgmtAPIStructs.h
+		// sNASGetIMSPreferenceResponse_IMSPreferenceInfo): TLV 0x10 = radio
+		// interface (u8) + 64-bit mask, voice bit 0, SMS bit 1. What the call
+		// manager thinks IMS may carry, as opposed to what IMSA reports.
 		GET_IMS_PREF: {
 			id: 0x0073,
 			req: {},
 			resp: { pref: { t: 0x10, f: { sys_mode: 'u8', call_types: 'u64' } } },
 		},
-		// Get System Selection Preference 0x0034 (libqmi and vendor IDL):
+		// Get System Selection Preference 0x0034 (libqmi 1.38 qmi-service-nas.json):
 		// 0x18 service domain, 0x1F usage setting, 0x20 voice domain pref
 		GET_SSP: {
 			id: 0x0034,
@@ -686,8 +668,7 @@ function create(deps)
 
 			// why the call manager might refuse a VoLTE origination
 			diag: (ref, ext, args, cb) => use(ref, cb, (s, done) =>
-				all([ [ 'pref', s.nas, 'GET_IMS_PREF' ], [ 'ssp', s.nas, 'GET_SSP' ],
-				      [ 'qip', s.ims, 'GET_QIPCALL' ], [ 'block', s.imsa, 'GET_BLOCK_STATUS' ] ], (r) => {
+				all([ [ 'pref', s.nas, 'GET_IMS_PREF' ], [ 'ssp', s.nas, 'GET_SSP' ] ], (r) => {
 					for (let k, x in r)
 						if (stale(x[0]))
 							return done(null, null, true);
@@ -703,10 +684,6 @@ function create(deps)
 						selection: one(r.ssp, (d) => ({
 							srv_domain: d.srv_domain, usage: d.usage, voice_domain: d.voice_domain,
 						})),
-						qipcall: one(r.qip, (d) => ({
-							volte: d.volte, mobile_data: d.mobile_data, vt: d.vt,
-						})),
-						block: one(r.block, (d) => ({ raw: raw_of(d) })),
 					});
 				})),
 
