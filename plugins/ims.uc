@@ -131,20 +131,17 @@ const IMS = {
 				volte:       { t: 0x13, f: 'u8' },
 			},
 		},
-		// Same IDL: Set IMS Service Enable Config 0x008F — the AP-side switch
-		// that tells the call manager VoLTE is allowed (the IDL default is
-		// DISABLED; the RIL sends it when the framework enables voice). A
-		// device without a RIL never did, and the modem then refuses MO calls
-		// instead of routing them to IMS. TLV numbering starts at 0x10
-		// (result = 0x02): volte 0x10, vt 0x11, mobile_data 0x12, wifi 0x14,
-		// ims_service 0x18, ut 0x19, sms 0x1A, ussd 0x1C — the GET 0x0090
-		// tail (reg/ut/sms/ussd) is HW-verified on the RG650E.
+		// Set IMS Services Enabled Setting 0x008F (libqmi 1.38
+		// qmi-service-ims.json, since 1.38): volte 0x10, vt 0x11, wifi 0x14,
+		// ims_service 0x18, ut 0x19, sms 0x1A, ussd 0x1C. Without volte=1 the
+		// modem refuses every MO call before any radio activity, with Dial
+		// Call InvalidArgument (HW-observed on the RG650E, GDSP SIM,
+		// 2026-11-13): a box without an Android RIL never sends it.
 		SET_SERVICE_ENABLE: {
 			id: 0x008F,
 			req: {
 				volte:       { t: 0x10, f: 'u8' },
 				vt:          { t: 0x11, f: 'u8' },
-				mobile_data: { t: 0x12, f: 'u8' },
 				wifi:        { t: 0x14, f: 'u8' },
 				ims_service: { t: 0x18, f: 'u8' },
 				ut:          { t: 0x19, f: 'u8' },
@@ -450,7 +447,7 @@ function create(deps)
 			// at the next registration — re-apply on every open, so a modem
 			// reset cannot leave the box without it.
 			s.ims.request('SET_SERVICE_ENABLE', {
-				volte: 1, mobile_data: 1, ims_service: 1, ut: 1, sms: 1, ussd: 1,
+				volte: 1, ims_service: 1, ut: 1, sms: 1, ussd: 1,
 			}, (e) => log(e ? 'warn' : 'info', sprintf('ims %s: volte enable %s', ref,
 				e ? sprintf('refused (%s)', err_of(e)) : 'sent')));
 			done();
@@ -779,7 +776,7 @@ function create(deps)
 				let on = args?.volte ?? 1;
 
 				s.ims.request('SET_SERVICE_ENABLE', {
-					volte: on, mobile_data: args?.mobile_data ?? 1,
+					volte: on,
 					ims_service: args?.reg ?? 1, ut: args?.ut ?? 1,
 					sms: args?.sms ?? 1, ussd: args?.ussd ?? 1,
 				}, (e, d) => {
