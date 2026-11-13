@@ -177,6 +177,12 @@ captured on a OnePlus 8T (research/op8t-20261113/FINDINGS.md) agree.
 - **Call mode 6:** the normal first state of a call: "undetermined", the
   Gobi API's "Unknown". It is followed by mode 4 (LTE) once call control
   is done.
+- **Set once:** on the 8T, flipping the subscription's VoLTE flag later
+  changes only the framework's own gate and sends no QMI item to the
+  modem, even across an airplane-mode cycle. The modem keeps the voice
+  state it was given at provisioning (FINDINGS.md, section 7). For
+  wwand-ims that confirms writing `volte 1` on every open: idempotent, and
+  the only point where the AP sets it.
 - **IMS services at bring-up:** they are reported disabled first and
   re-enabled within about a second with no AP request (8T). sipd must not
   treat that flap as a lost registration.
