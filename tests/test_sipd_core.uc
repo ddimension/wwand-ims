@@ -145,6 +145,13 @@ core.on_packet(ack('ACK', 2), PHONE);
 fire_timers();
 eq(length(sent), before + 1, 'ACK stops the retransmission');
 
+// a handover LTE -> WLAN during the call (mode 4 -> 7, as on the OnePlus 8T
+// at 19:52, research/op8t-20261113): nothing for the phone, the call stays
+before = length(sent);
+core.on_call_event({ modem: 'wwmodem0', calls: [ { id: 1, state: 'conversation', direction: 'mo', mode: 'wlan' } ] });
+eq(length(sent), before, 'handover to WLAN: no message to the phone');
+ok(core.call() != null, 'handover to WLAN: the call stays up');
+
 core.on_packet(ack('BYE', 3), PHONE);
 eq(last().status, 200, 'phone BYE: 200 OK');
 eq(ims_calls[length(ims_calls) - 1], [ 'hangup', { id: 1 } ], 'phone BYE: the modem call is hung up');

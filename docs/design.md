@@ -184,6 +184,43 @@ captured on a OnePlus 8T (research/op8t-20261113/FINDINGS.md) agree.
   the network never sets it up and the IMS core aborts every call with
   `503 … ASR …`, MO and MT alike (NOTES.md, 2026-11-13 15:50–16:44 UTC).
 
+### 5.5 VoWiFi and handover (stock RIL, checked 2026-11-13)
+
+Captured on the OnePlus 8T with a congstar eSIM (Telekom network), see
+research/op8t-20261113/FINDINGS.md, section 6.
+
+- **Enabling:** the framework's WFC toggle (`wfc_ims_enabled`) goes through
+  the RIL into IMS 0x008F as the VoWiFi switch, TLV 0x14 "IMS Voice WiFi
+  Service Enable" (libqmi 1.38). The RIL also sends WFC settings to its
+  NAS module. Voice then shows as enabled on IWLAN.
+- **A first enable is not enough:** until the IMS registration on WLAN
+  offers voice, calls still go out over LTE (call mode 4). On the 8T, an
+  eSIM off/on cycle plus a fresh toggle did it.
+- **Handover during a call (Rove-In), 19:52:13–19:52:20:**
+  1. the call starts on LTE (mode 4) and alerts on LTE;
+  2. after 2.5 s it is handed over to IWLAN;
+  3. it ends on WLAN (mode 7).
+
+  The modem announces it with handover status events (start, then
+  complete); the call itself keeps its state.
+
+What follows for wwand-ims:
+
+| Part | Effect |
+|---|---|
+| plugin | call mode 7 is named `wlan`, so a handover shows in the wwand.ims.call events as `mode` changing while `state` stays; the `volte_enable` op takes `wifi` for TLV 0x14 (sent only when given) |
+| sipd | reacts to call states only, so a handover is invisible to the LAN phone (host test: mode lte -> wlan mid-call, no SIP message, call stays) |
+| audio | the modem keeps the voice path across the handover (8T); to be confirmed on the module once a call connects |
+
+Open for a router:
+- **WLAN on a router** would be its fixed-line WAN as the non-3GPP access.
+- **ePDG tunnel:** whether a USB/M.2 module like the RG650E can carry IMS
+  through such a tunnel (IKEv2/EAP-AKA to the operator's ePDG), and what
+  the AP has to signal for it, is not established. The 8T capture shows
+  the Android side only. Nothing of this is built yet.
+- **GDSP:** the Vodafone product description lists VoWiFi with a separate
+  setup; not tested.
+
 ## 6. Test device
 
 The Chateau's RG650E (newest firmware and MBNs, QMI). The GDSP SIM needs

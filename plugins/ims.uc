@@ -780,20 +780,28 @@ function create(deps)
 			// _CONFIG, the message a RIL sends when the framework enables
 			// voice). The modem's default on a data-only build is volte off;
 			// without this, every dial is refused before any radio activity.
+			// Set IMS Services Enabled Setting (0x008F, libqmi 1.38) by hand.
+			// Only what is passed is sent, so the MBN keeps everything else;
+			// volte defaults to 1. wifi is the VoWiFi switch (TLV 0x14), the
+			// one a stock RIL sets from the framework's WFC toggle (OnePlus 8T,
+			// research/op8t-20261113, section 6); whether a module calls over
+			// WLAN at all is a property of its firmware.
+			//   args: { volte, wifi, reg, ut, sms, ussd }   (0 or 1 each)
 			volte_enable: (ref, ext, args, cb) => use(ref, cb, (s, done) => {
-				let on = args?.volte ?? 1;
+				let req = { volte: args?.volte ?? 1 };
+				let names = { wifi: 'wifi', reg: 'ims_service', ut: 'ut', sms: 'sms', ussd: 'ussd' };
 
-				s.ims.request('SET_SERVICE_ENABLE', {
-					volte: on,
-					ims_service: args?.reg ?? 1, ut: args?.ut ?? 1,
-					sms: args?.sms ?? 1, ussd: args?.ussd ?? 1,
-				}, (e, d) => {
+				for (let a, f in names)
+					if (args?.[a] != null)
+						req[f] = args[a] ? 1 : 0;
+
+				s.ims.request('SET_SERVICE_ENABLE', req, (e, d) => {
 					if (stale(e))
 						return done(null, null, true);
 					if (e)
 						return done({ error: err_of(e), raw: raw_of(d) });
-					log('info', sprintf('ims %s: volte enabled: %d', ref, on));
-					done(null, { volte: on });
+					log('info', sprintf('ims %s: service enable %J', ref, req));
+					done(null, req);
 				});
 			}),
 

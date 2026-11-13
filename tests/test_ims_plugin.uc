@@ -159,6 +159,22 @@ let badt = null;
 inst.ops.dial('m0', {}, { number: '+491701234567', call_type: 'video' }, (e) => badt = e);
 eq(badt, { error: 'invalid_call_type' }, 'dial: an unknown call type is refused');
 
+// volte_enable sends only what it is given (volte defaults to 1)
+let vreq = null;
+let inst_v = P.create({
+	log: () => null,
+	qmi_client: (ref, schema, cb) => cb(null, {
+		on: () => null,
+		request: (name, args, cb2) => { if (name == 'SET_SERVICE_ENABLE') vreq = args; cb2(null, {}); },
+	}),
+	qmi_release: () => null,
+});
+let vres = null;
+inst_v.ops.volte_enable('m2', {}, { wifi: 1 }, (e, r) => vres = r);
+eq(vreq, { volte: 1, wifi: 1 }, 'volte_enable: only volte and the given wifi switch are sent');
+eq(tlv.pack(P.IMS.messages.SET_SERVICE_ENABLE.req, vreq), T(0x10, u8(1)) + T(0x14, u8(1)),
+	'volte_enable: VoLTE 0x10 and VoWiFi 0x14 TLVs (libqmi 1.38)');
+
 let bad = null;
 inst.ops.dial('m0', {}, { number: '12;ATH' }, (e) => bad = e);
 eq(bad, { error: 'invalid_number' }, 'dial: a number with other characters is refused');
