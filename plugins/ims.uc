@@ -441,14 +441,15 @@ function create(deps)
 
 		bind(s.imsa, 'imsa', () => bind(s.ims, 'ims', () => {
 			s.imsa.request('REGISTER_INDICATIONS', { reg: 1, services: 1 }, () => null);
-			// The IDL default is volte DISABLED; a device without a RIL never
-			// enables it, and the call manager then refuses MO calls instead
-			// of routing them to IMS. The write is idempotent and takes effect
-			// at the next registration — re-apply on every open, so a modem
-			// reset cannot leave the box without it.
-			s.ims.request('SET_SERVICE_ENABLE', {
-				volte: 1, ims_service: 1, ut: 1, sms: 1, ussd: 1,
-			}, (e) => log(e ? 'warn' : 'info', sprintf('ims %s: volte enable %s', ref,
+			// The switch is kept by the modem across a reset: set to 0, IMS
+			// does not even register after one; set to 1, calls ring with no
+			// further write (HW-observed on the RG650E, 2026-11-13). It is
+			// written on every open anyway, so a box where the modem never
+			// had it (no Android RIL ever sent it) or where something
+			// cleared it recovers without anyone noticing.
+			// only the VoLTE switch: the other services stay as the
+			// carrier configuration has them
+			s.ims.request('SET_SERVICE_ENABLE', { volte: 1 }, (e) => log(e ? 'warn' : 'info', sprintf('ims %s: volte enable %s', ref,
 				e ? sprintf('refused (%s)', err_of(e)) : 'sent')));
 			done();
 		}));
