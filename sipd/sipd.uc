@@ -74,9 +74,29 @@ if (!sock || !sock.bind({ address: listen_ip, port: port })) {
 	exit(1);
 }
 
+// TCP: one listener; each accepted connection keeps its socket and a byte
+// buffer. A message ends after its headers plus Content-Length bytes (RFC
+// 3261 18.3, mandatory on stream transports). A request to a phone that
+// registered over TCP goes over that connection (the phone does not listen
+// for new ones behind its own firewall).
+let tcp = socket.create(socket.AF_INET, socket.SOCK_STREAM);
+tcp?.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, true);
+if (!tcp || !tcp.bind({ address: listen_ip, port: port }) || !tcp.listen(16)) {
+	log('error', sprintf('sipd: cannot listen on TCP %s:%d (%s)', listen_ip, port, socket.error()));
+	exit(1);
+}
+let conns = {}, next_conn = 0;
+
 let send = (text, addr) => {
 	if (verbose)
-		log('debug', sprintf('-> %s:%d\n%s', addr.address, addr.port, text));
+		log('debug', sprintf('-> %s %s:%d\n%s', addr.transport ?? 'UDP', addr.address, addr.port, text));
+	if (addr.transport == 'TCP') {
+		let c = conns[sprintf('%d', addr.conn)];
+
+		if (!c)
+			return log('warn', sprintf('sipd: TCP connection to %s:%d is gone', addr.address, addr.port));
+		return c.sock.send(text);
+	}
 	sock.send(text, 0, { address: addr.address, port: addr.port });
 };
 
@@ -145,11 +165,75 @@ uloop.handle(sock.fileno(), () => {
 	while ((buf = sock.recv(65535, socket.MSG_DONTWAIT, from)) != null) {
 		if (verbose)
 			log('debug', sprintf('<- %s:%d\n%s', from.address, from.port, buf));
-		core.on_packet(buf, { address: from.address, port: from.port });
+		core.on_packet(buf, { address: from.address, port: from.port, transport: 'UDP' });
 		from = {};
 	}
 }, uloop.ULOOP_READ);
 
-log('info', sprintf('sipd: listening on %s:%d for %s, modem %s, codecs %s',
+let tcp_frames = (c) => {
+	for (;;) {
+		// RFC 5626 4.4.1 keepalive: CRLFCRLF ping, CRLF pong
+		if (substr(c.buf, 0, 4) == '\r\n\r\n') {
+			c.buf = substr(c.buf, 4);
+			c.sock.send('\r\n');
+			continue;
+		}
+		c.buf = replace(c.buf, /^(\r\n)+/, '');
+
+		let he = index(c.buf, '\r\n\r\n');
+		if (he < 0)
+			return;
+
+		let m = match(substr(c.buf, 0, he), /(^|\r\n)([Cc]ontent-[Ll]ength|l)[ \t]*:[ \t]*([0-9]+)/);
+		let len = m ? +m[3] : 0;
+
+		if (length(c.buf) < he + 4 + len)
+			return;
+
+		let msg = substr(c.buf, 0, he + 4 + len);
+		c.buf = substr(c.buf, he + 4 + len);
+		if (verbose)
+			log('debug', sprintf('<- TCP %s:%d\n%s', c.addr.address, c.addr.port, msg));
+		core.on_packet(msg, { ...c.addr });
+	}
+};
+
+uloop.handle(tcp.fileno(), () => {
+	let peer = {};
+	let cs = tcp.accept(peer);
+
+	if (!cs)
+		return;
+
+	let id = ++next_conn;
+	let c = { sock: cs, buf: '', addr: { address: peer.address, port: peer.port, transport: 'TCP', conn: id } };
+
+	conns[sprintf('%d', id)] = c;
+	log('info', sprintf('sipd: TCP connection %d from %s:%d', id, peer.address, peer.port));
+
+	c.h = uloop.handle(cs.fileno(), () => {
+		let d = cs.recv(65535, socket.MSG_DONTWAIT);
+
+		if (d == null && socket.error(true) == 11)	// EAGAIN
+			return;
+		if (!d) {
+			log('info', sprintf('sipd: TCP connection %d closed', id));
+			c.h.delete();
+			cs.close();
+			delete conns[sprintf('%d', id)];
+			return;
+		}
+		c.buf += d;
+		if (length(c.buf) > 65536) {
+			log('warn', sprintf('sipd: TCP connection %d: no message end in 64 kB, closing', id));
+			c.buf = '';
+			cs.close();
+		}
+		else
+			tcp_frames(c);
+	}, uloop.ULOOP_READ);
+}, uloop.ULOOP_READ);
+
+log('info', sprintf('sipd: listening on UDP and TCP %s:%d for %s, modem %s, codecs %s',
 	listen_ip, port, join(',', keys(users)), modem, join(',', codecs)));
 uloop.run();

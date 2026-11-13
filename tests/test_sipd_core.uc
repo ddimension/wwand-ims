@@ -8,6 +8,7 @@ let S = require('sipd_sip');
 let CORE = require('sipd_core');
 
 let PHONE = { address: '192.168.1.50', port: 5062 };
+let ap = (a) => ({ address: a?.address, port: a?.port });
 let CRLF = (lines) => join('\r\n', lines);
 
 // ---- the fake environment ---------------------------------------------------
@@ -80,7 +81,7 @@ core.on_packet(register(null, 1), PHONE);
 eq(last().status, 401, 'register: unauthenticated gets 401');
 let chal = S.get(last(), 'www-authenticate');
 ok(match(chal, /^Digest realm="wwand", nonce="[^"]+", algorithm=MD5, qop="auth"$/), 'register: Digest challenge');
-eq(sent[0].addr, PHONE, 'register: answer to the source address');
+eq(ap(sent[0].addr), PHONE, 'register: answer to the source address');
 
 core.on_packet(register(authorize(chal, 'REGISTER', 'sip:192.168.1.1', '100', 'wrong'), 2), PHONE);
 eq(last().status, 401, 'register: wrong password challenged again');
@@ -88,7 +89,7 @@ eq(last().status, 401, 'register: wrong password challenged again');
 core.on_packet(register(authorize(chal, 'REGISTER', 'sip:192.168.1.1', '100', 'secret'), 3), PHONE);
 eq(last().status, 200, 'register: 200 OK with the right password');
 eq(S.get(last(), 'contact'), '<sip:100@192.168.1.50:5062>;expires=600', 'register: binding echoed');
-eq(core.bindings()['100'].addr, PHONE, 'register: binding stored with the source address');
+eq(ap(core.bindings()['100'].addr), PHONE, 'register: binding stored with the source address');
 
 // ---- outgoing call: ringing, answer, ACK, BYE ----------------------------------------
 
@@ -196,7 +197,7 @@ core.on_call_event({ modem: 'wwmodem0', calls: [ { id: 2, state: 'incoming', dir
 let inv = last();
 eq(inv.method, 'INVITE', 'incoming: INVITE to the registered phone');
 eq(inv.uri, 'sip:100@192.168.1.50:5062', 'incoming: Request-URI is the binding');
-eq(sent[0].addr, PHONE, 'incoming: sent to the registered source address');
+eq(ap(sent[0].addr), PHONE, 'incoming: sent to the registered source address');
 eq(S.uri_of(S.get(inv, 'from')), 'sip:+4930123@192.168.1.1', 'incoming: caller number in From');
 eq(S.sdp_parse(inv.body).pts, [ 8, 0, 101 ], 'incoming: SDP offer with our codecs');
 
@@ -243,6 +244,26 @@ reset();
 core.on_call_event({ modem: 'wwmodem0', calls: [ { id: 4, state: 'incoming', direction: 'mt', mode: 'lte' } ] });
 core.on_call_event({ modem: 'wwmodem0', calls: [] });
 eq(last().method, 'CANCEL', 'caller gives up: CANCEL to the phone');
+
+// ---- a phone on TCP: requests go back over its connection, no retransmits ----------------
+
+let TCP = { address: '192.168.1.60', port: 40000, transport: 'TCP', conn: 7 };
+reset();
+core.on_packet(replace(register(null, 20), '192.168.1.50:5062', '192.168.1.60:40000'), TCP);
+let tchal = S.get(last(), 'www-authenticate');
+eq(sent[0].addr.conn, 7, 'tcp register: challenge on the same connection');
+core.on_packet(replace(register(authorize(tchal, 'REGISTER', 'sip:192.168.1.1', '100', 'secret'), 21),
+	'192.168.1.50:5062', '192.168.1.60:40000'), TCP);
+eq(last().status, 200, 'tcp register: 200 OK');
+
+reset();
+core.on_call_event({ modem: 'wwmodem0', calls: [ { id: 5, state: 'incoming', direction: 'mt', mode: 'lte' } ] });
+eq(sent[0].addr.conn, 7, 'tcp: incoming INVITE over the registering connection');
+ok(match(S.get(last(), 'via'), /^SIP\/2\.0\/TCP /), 'tcp: Via names TCP');
+ok(match(S.get(last(), 'contact'), /;transport=tcp>$/), 'tcp: Contact asks for TCP');
+fire_timers();
+eq(length(sent), 1, 'tcp: no INVITE retransmission');
+core.on_call_event({ modem: 'wwmodem0', calls: [] });
 
 // ---- events of another modem are ignored ----------------------------------------------------------
 

@@ -39,7 +39,11 @@ function create(env)
 
 	// where a request came from: rport/received (RFC 3581) means the source
 	// address, which is also right without NAT on a LAN
-	let source = (from) => ({ address: from.address, port: from.port });
+	// ... and the transport it came over: a TCP request is answered on its
+	// connection, and a phone registered over TCP gets its INVITE there
+	let source = (from) => ({ address: from.address, port: from.port,
+	                          transport: from.transport ?? 'UDP', conn: from.conn });
+	let tp = (addr) => addr?.transport ?? 'UDP';
 
 	// ---- authentication -----------------------------------------------------
 
@@ -103,7 +107,8 @@ function create(env)
 
 	// ---- dialog helpers -------------------------------------------------------
 
-	let our_contact = () => sprintf('<sip:wwand@%s>', me());
+	let our_contact = (addr) => (tp(addr) == 'TCP')
+		? sprintf('<sip:wwand@%s;transport=tcp>', me()) : sprintf('<sip:wwand@%s>', me());
 
 	let stop_retx = (c) => {
 		c.retx?.cancel();
@@ -111,9 +116,15 @@ function create(env)
 	};
 
 	// resend `text` with RFC 3261 doubling (T1, capped at T2) until stopped or
-	// TIMER_B ran out; then give_up()
+	// TIMER_B ran out; then give_up(). Over TCP only the timeout: a reliable
+	// transport is not retransmitted on (RFC 3261 17.1.1.2).
 	let retransmit = (c, text, addr, give_up) => {
 		stop_retx(c);
+		if (tp(addr) == 'TCP') {
+			send(text, addr);
+			c.retx = env.timer(TIMER_B, () => { c.retx = null; give_up?.(); });
+			return;
+		}
 		let wait = T1, spent = 0;
 		let tick;
 
@@ -152,7 +163,7 @@ function create(env)
 	let to_phone = (c, method, opts) => {
 		let target = c.remote_contact ?? c.target;
 		let hs = [
-			[ 'Via', sprintf('SIP/2.0/UDP %s;branch=%s;rport', me(), opts?.branch ?? branch()) ],
+			[ 'Via', sprintf('SIP/2.0/%s %s;branch=%s;rport', tp(c.addr), me(), opts?.branch ?? branch()) ],
 			[ 'Max-Forwards', '70' ],
 			[ 'From', c.local ],
 			[ 'To', c.remote ],
@@ -222,14 +233,14 @@ function create(env)
 		if (mc.state == 'alerting' && c.state == 'trying') {
 			c.state = 'ringing';
 			c.last = S.response(c.req, 180, 'Ringing', { to_tag: c.local_tag,
-				headers: [ [ 'Contact', our_contact() ] ] });
+				headers: [ [ 'Contact', our_contact(c.addr) ] ] });
 			send(c.last, c.addr);
 		}
 		else if (mc.state == 'conversation' && (c.state == 'trying' || c.state == 'ringing')) {
 			c.state = 'up';
 			env.media.connect(c);
 			c.last = S.response(c.req, 200, 'OK', { to_tag: c.local_tag, headers: [
-				[ 'Contact', our_contact() ], [ 'Content-Type', 'application/sdp' ] ] }, answer_sdp(c));
+				[ 'Contact', our_contact(c.addr) ], [ 'Content-Type', 'application/sdp' ] ] }, answer_sdp(c));
 			// until the ACK (RFC 3261 13.3.1.4); without one, end the call
 			retransmit(c, c.last, c.addr, () => {
 				hangup_modem(c);
@@ -263,13 +274,13 @@ function create(env)
 
 		let offer = S.sdp({ ip: cfg.ip, port: c.rtp_port, session: c.session, codecs: cfg.codecs });
 		c.invite = S.build(sprintf('INVITE %s SIP/2.0', c.target), [
-			[ 'Via', sprintf('SIP/2.0/UDP %s;branch=%s;rport', me(), c.branch) ],
+			[ 'Via', sprintf('SIP/2.0/%s %s;branch=%s;rport', tp(c.addr), me(), c.branch) ],
 			[ 'Max-Forwards', '70' ],
 			[ 'From', c.local ],
 			[ 'To', c.remote ],
 			[ 'Call-ID', c.call_id ],
 			[ 'CSeq', '1 INVITE' ],
-			[ 'Contact', our_contact() ],
+			[ 'Contact', our_contact(c.addr) ],
 			[ 'Content-Type', 'application/sdp' ],
 		], offer);
 
