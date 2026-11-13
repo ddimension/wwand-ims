@@ -1,0 +1,456 @@
+// SPDX-License-Identifier: GPL-2.0-only
+// Copyright (C) 2026 André Valentin <avalentin@marcant.net>
+// sipd core: a registrar and back-to-back user agent between SIP phones on
+// the LAN and the modem's IMS calls (the ims plugin's ops and events).
+//
+// Everything outside is injected (env), so the logic runs in host tests:
+//   env.send(text, addr)             addr = { address, port }
+//   env.ims(op, args, cb)            the ims plugin op on env.cfg.modem
+//   env.media.start(call) -> port    a local RTP port for the call
+//   env.media.connect(call)          call.remote_rtp and call.codec are set
+//   env.media.stop(call)
+//   env.timer(ms, fn) -> { cancel }
+//   env.now() -> seconds, env.random() -> hex string, env.log(level, msg)
+//   env.cfg = { ip, port, realm, modem, codecs, users: { name: { password } } }
+//
+// One call per modem: the modem has one voice line. A second INVITE while a
+// call runs gets 486 Busy Here.
+
+'use strict';
+
+let S = require('sipd_sip');
+
+const T1 = 500, T2 = 4000, TIMER_B = 64 * T1;	// RFC 3261 17.1.1.1/17.1.2.2
+const NONCE_TTL = 300;
+
+function create(env)
+{
+	let cfg = env.cfg;
+	let log = env.log;
+	let bindings = {};		// user -> { contact, addr, expires }
+	let nonces = {};		// nonce -> issued at
+	let call = null;		// the one call
+
+	let me = () => sprintf('%s:%d', cfg.ip, cfg.port);
+	let tag = () => substr(env.random(), 0, 10);
+	let branch = () => 'z9hG4bK' + substr(env.random(), 0, 16);
+
+	let send = (text, addr) => env.send(text, addr);
+
+	// where a request came from: rport/received (RFC 3581) means the source
+	// address, which is also right without NAT on a LAN
+	let source = (from) => ({ address: from.address, port: from.port });
+
+	// ---- authentication -----------------------------------------------------
+
+	let new_nonce = () => {
+		let n = env.random();
+		let t = env.now();
+
+		for (let k, at in nonces)
+			if (t - at > NONCE_TTL)
+				delete nonces[k];
+		nonces[n] = t;
+		return n;
+	};
+
+	// the authenticated user, or null after sending the challenge
+	let authenticate = (req, from, header, status, reason, challenge_header) => {
+		let a = S.auth_parse(S.get(req, header));
+		let user = a ? cfg.users[a.username] : null;
+
+		if (a && user && nonces[a.nonce] != null && a.realm == cfg.realm &&
+		    S.auth_check(a, req.method, user.password))
+			return a.username;
+
+		send(S.response(req, status, reason, { to_tag: tag(), headers: [
+			[ challenge_header, S.challenge(cfg.realm, new_nonce()) ] ] }), source(from));
+		return null;
+	};
+
+	// ---- registrar ----------------------------------------------------------
+
+	let on_register = (req, from) => {
+		let user = authenticate(req, from, 'authorization', 401, 'Unauthorized', 'WWW-Authenticate');
+
+		if (!user)
+			return;
+
+		let contact = S.get(req, 'contact');
+		let exp = +(S.param(contact, 'expires') ?? S.get(req, 'expires') ?? 3600);
+
+		if (contact == '*' || exp == 0) {
+			delete bindings[user];
+			log('info', sprintf('sipd: %s unregistered', user));
+			return send(S.response(req, 200, 'OK', { to_tag: tag() }), source(from));
+		}
+
+		exp = min(max(exp, 60), 3600);
+		bindings[user] = { contact: S.uri_of(contact), addr: source(from), expires: env.now() + exp };
+		log('info', sprintf('sipd: %s registered at %s:%d', user, from.address, from.port));
+		send(S.response(req, 200, 'OK', { to_tag: tag(), headers: [
+			[ 'Contact', sprintf('<%s>;expires=%d', S.uri_of(contact), exp) ] ] }), source(from));
+	};
+
+	let registered = () => {
+		let t = env.now();
+
+		for (let u, b in bindings)
+			if (b.expires > t)
+				return u;
+		return null;
+	};
+
+	// ---- dialog helpers -------------------------------------------------------
+
+	let our_contact = () => sprintf('<sip:wwand@%s>', me());
+
+	let stop_retx = (c) => {
+		c.retx?.cancel();
+		c.retx = null;
+	};
+
+	// resend `text` with RFC 3261 doubling (T1, capped at T2) until stopped or
+	// TIMER_B ran out; then give_up()
+	let retransmit = (c, text, addr, give_up) => {
+		stop_retx(c);
+		let wait = T1, spent = 0;
+		let tick;
+
+		tick = () => {
+			spent += wait;
+			if (spent >= TIMER_B) {
+				c.retx = null;
+				return give_up?.();
+			}
+			send(text, addr);
+			wait = min(wait * 2, T2);
+			c.retx = env.timer(wait, tick);
+		};
+		send(text, addr);
+		c.retx = env.timer(wait, tick);
+	};
+
+	let end_call = (c, why) => {
+		if (!c)
+			return;
+		stop_retx(c);
+		env.media.stop(c);
+		log('info', sprintf('sipd: call %s ended (%s)', c.call_id, why));
+		if (call === c)
+			call = null;
+	};
+
+	let hangup_modem = (c) => {
+		if (c.mid != null && !c.modem_gone)
+			env.ims('hangup', { id: c.mid }, () => null);
+	};
+
+	let answer_sdp = (c) => S.sdp({ ip: cfg.ip, port: c.rtp_port, session: c.session, codecs: [ c.codec ] });
+
+	// a request to the phone inside the dialog (BYE, CANCEL, ACK)
+	let to_phone = (c, method, opts) => {
+		let target = c.remote_contact ?? c.target;
+		let hs = [
+			[ 'Via', sprintf('SIP/2.0/UDP %s;branch=%s;rport', me(), opts?.branch ?? branch()) ],
+			[ 'Max-Forwards', '70' ],
+			[ 'From', c.local ],
+			[ 'To', c.remote ],
+			[ 'Call-ID', c.call_id ],
+			[ 'CSeq', sprintf('%d %s', opts?.cseq ?? ++c.cseq, method) ],
+		];
+
+		return S.build(sprintf('%s %s SIP/2.0', method, target), hs, '');
+	};
+
+	// ---- outgoing: phone -> modem ----------------------------------------------
+
+	let on_invite = (req, from) => {
+		// a retransmission of the INVITE we are handling: repeat our answer
+		if (call?.dir == 'out' && call.call_id == S.get(req, 'call-id')) {
+			if (call.last)
+				send(call.last, call.addr);
+			return;
+		}
+
+		if (!authenticate(req, from, 'proxy-authorization', 407, 'Proxy Authentication Required',
+		                  'Proxy-Authenticate'))
+			return;
+
+		let ruri = S.parse_uri(req.uri);
+		let number = ruri?.user;
+
+		if (!number || !match(number, /^\+?[0-9*#]{3,32}$/))
+			return send(S.response(req, 484, 'Address Incomplete', { to_tag: tag() }), source(from));
+		if (call)
+			return send(S.response(req, 486, 'Busy Here', { to_tag: tag() }), source(from));
+
+		let offer = S.sdp_parse(req.body);
+		let codec = S.sdp_pick(offer, cfg.codecs);
+
+		if (!codec)
+			return send(S.response(req, 488, 'Not Acceptable Here', { to_tag: tag() }), source(from));
+
+		let c = {
+			dir: 'out', req: req, addr: source(from), call_id: S.get(req, 'call-id'),
+			local_tag: tag(), number: number, codec: codec, session: 1 + (env.now() % 100000),
+			remote_rtp: { address: offer.ip ?? from.address, port: offer.port },
+			dtmf_pt: offer.dtmf_pt, cseq: 0, state: 'trying',
+			remote_contact: S.uri_of(S.get(req, 'contact')),
+		};
+		c.local = S.get(req, 'to') + ';tag=' + c.local_tag;
+		c.remote = S.get(req, 'from');
+		call = c;
+
+		c.rtp_port = env.media.start(c);
+		send(S.response(req, 100, 'Trying'), c.addr);
+		log('info', sprintf('sipd: outgoing call to %s (%s)', number, codec));
+
+		env.ims('dial', { number: number }, (err, res) => {
+			if (call !== c)
+				return;
+			if (err || res?.id == null) {
+				c.last = S.response(req, 503, 'Service Unavailable', { to_tag: c.local_tag });
+				send(c.last, c.addr);
+				return end_call(c, 'dial failed');
+			}
+			c.mid = res.id;
+		});
+	};
+
+	let out_event = (c, mc) => {
+		if (mc.state == 'alerting' && c.state == 'trying') {
+			c.state = 'ringing';
+			c.last = S.response(c.req, 180, 'Ringing', { to_tag: c.local_tag,
+				headers: [ [ 'Contact', our_contact() ] ] });
+			send(c.last, c.addr);
+		}
+		else if (mc.state == 'conversation' && (c.state == 'trying' || c.state == 'ringing')) {
+			c.state = 'up';
+			env.media.connect(c);
+			c.last = S.response(c.req, 200, 'OK', { to_tag: c.local_tag, headers: [
+				[ 'Contact', our_contact() ], [ 'Content-Type', 'application/sdp' ] ] }, answer_sdp(c));
+			// until the ACK (RFC 3261 13.3.1.4); without one, end the call
+			retransmit(c, c.last, c.addr, () => {
+				hangup_modem(c);
+				end_call(c, 'no ACK');
+			});
+		}
+	};
+
+	// ---- incoming: modem -> phone -------------------------------------------------
+
+	let in_start = (mc) => {
+		let user = registered();
+
+		if (!user) {
+			log('warn', sprintf('sipd: incoming call from %s, no phone registered', mc.number ?? '?'));
+			return;
+		}
+
+		let b = bindings[user];
+		let c = {
+			dir: 'in', mid: mc.id, call_id: env.random() + '@' + cfg.ip, local_tag: tag(),
+			addr: b.addr, target: b.contact, cseq: 1, state: 'calling', codec: null,
+			session: 1 + (env.now() % 100000), branch: branch(), number: mc.number,
+		};
+		let caller = mc.number ?? 'anonymous';
+
+		c.local = sprintf('<sip:%s@%s>;tag=%s', caller, cfg.ip, c.local_tag);
+		c.remote = sprintf('<sip:%s@%s>', user, cfg.ip);
+		call = c;
+		c.rtp_port = env.media.start(c);
+
+		let offer = S.sdp({ ip: cfg.ip, port: c.rtp_port, session: c.session, codecs: cfg.codecs });
+		c.invite = S.build(sprintf('INVITE %s SIP/2.0', c.target), [
+			[ 'Via', sprintf('SIP/2.0/UDP %s;branch=%s;rport', me(), c.branch) ],
+			[ 'Max-Forwards', '70' ],
+			[ 'From', c.local ],
+			[ 'To', c.remote ],
+			[ 'Call-ID', c.call_id ],
+			[ 'CSeq', '1 INVITE' ],
+			[ 'Contact', our_contact() ],
+			[ 'Content-Type', 'application/sdp' ],
+		], offer);
+
+		log('info', sprintf('sipd: incoming call from %s to %s', caller, user));
+		// Timer A/B (RFC 3261 17.1.1.2): resend until a response
+		retransmit(c, c.invite, c.addr, () => {
+			hangup_modem(c);
+			end_call(c, 'phone did not answer the INVITE');
+		});
+	};
+
+	let on_response = (res, from) => {
+		let c = call;
+		let cs = S.cseq(res);
+
+		if (!c || c.dir != 'in' || S.get(res, 'call-id') != c.call_id || cs?.method != 'INVITE')
+			return;
+
+		stop_retx(c);
+		c.remote = S.get(res, 'to');
+		if (S.get(res, 'contact'))
+			c.remote_contact = S.uri_of(S.get(res, 'contact'));
+
+		if (res.status < 200)
+			return;
+
+		// ACK every final response (2xx: new transaction, RFC 3261 13.2.2.4;
+		// others: the same branch, 17.1.1.3)
+		let ack = to_phone(c, 'ACK', { cseq: 1, branch: (res.status >= 300) ? c.branch : null });
+
+		send(ack, c.addr);
+		if (c.state == 'up')
+			return;	// a retransmitted 200 OK
+
+		if (res.status >= 300) {
+			log('info', sprintf('sipd: phone declined with %d', res.status));
+			hangup_modem(c);
+			return end_call(c, sprintf('phone %d', res.status));
+		}
+
+		let ans = S.sdp_parse(res.body);
+		c.codec = S.sdp_pick(ans, cfg.codecs);
+		if (!c.codec) {
+			send(to_phone(c, 'BYE'), c.addr);
+			hangup_modem(c);
+			return end_call(c, 'no common codec');
+		}
+
+		c.remote_rtp = { address: ans.ip ?? from.address, port: ans.port };
+		c.dtmf_pt = ans.dtmf_pt;
+		c.state = 'up';
+		env.media.connect(c);
+		env.ims('answer', { id: c.mid }, (err) => {
+			if (err && call === c) {
+				send(to_phone(c, 'BYE'), c.addr);
+				end_call(c, 'answer failed');
+			}
+		});
+	};
+
+	// ---- requests inside a call ------------------------------------------------------
+
+	let in_dialog = (req) => call && S.get(req, 'call-id') == call.call_id;
+
+	let on_cancel = (req, from) => {
+		let c = call;
+
+		if (!in_dialog(req) || c.dir != 'out') {
+			return send(S.response(req, 481, 'Call/Transaction Does Not Exist'), source(from));
+		}
+		send(S.response(req, 200, 'OK'), source(from));
+		if (c.state != 'up') {
+			c.last = S.response(c.req, 487, 'Request Terminated', { to_tag: c.local_tag });
+			send(c.last, c.addr);
+			hangup_modem(c);
+			end_call(c, 'cancelled by the phone');
+		}
+	};
+
+	let on_bye = (req, from) => {
+		if (!in_dialog(req))
+			return send(S.response(req, 481, 'Call/Transaction Does Not Exist'), source(from));
+
+		let c = call;
+
+		send(S.response(req, 200, 'OK'), source(from));
+		hangup_modem(c);
+		end_call(c, 'phone hung up');
+	};
+
+	let on_ack = (req) => {
+		if (in_dialog(req) && call.dir == 'out')
+			stop_retx(call);
+	};
+
+	// ---- modem events ------------------------------------------------------------------
+
+	// data = { modem, calls: [ { id, state, direction, number, ... } ] }
+	let on_call_event = (data) => {
+		if (data?.modem != cfg.modem)
+			return;
+
+		let calls = data.calls ?? [];
+		let c = call;
+
+		// an incoming call nobody is handling yet
+		if (!c)
+			for (let mc in calls)
+				if (mc.direction == 'mt' && (mc.state == 'incoming' || mc.state == 'waiting'))
+					return in_start(mc);
+
+		if (!c)
+			return;
+
+		let mc = null;
+		for (let x in calls)
+			if (c.mid != null && x.id == c.mid)
+				mc = x;
+
+		// the outgoing call's id is not known before the dial answers; its
+		// first events still belong to it
+		if (!mc && c.dir == 'out' && c.mid == null)
+			for (let x in calls)
+				if (x.direction == 'mo')
+					mc = x;
+
+		let gone = !mc || mc.state == 'end' || mc.state == 'disconnecting';
+
+		if (gone) {
+			if (c.mid == null && !mc)
+				return;
+			c.modem_gone = true;
+			if (c.dir == 'out' && c.state != 'up') {
+				// the network refused or the callee did not answer
+				c.last = S.response(c.req, 480, 'Temporarily Unavailable', { to_tag: c.local_tag,
+					headers: mc?.end_reason != null
+						? [ [ 'Reason', sprintf('Q.850;cause=16;text="modem end reason %d"', mc.end_reason) ] ]
+						: [] });
+				send(c.last, c.addr);
+			}
+			else if (c.dir == 'in' && c.state != 'up')
+				send(to_phone(c, 'CANCEL', { cseq: 1, branch: c.branch }), c.addr);
+			else
+				send(to_phone(c, 'BYE'), c.addr);
+			return end_call(c, 'modem call ended');
+		}
+
+		if (c.dir == 'out')
+			out_event(c, mc);
+	};
+
+	// ---- dispatch --------------------------------------------------------------------------
+
+	let on_packet = (buf, from) => {
+		let msg = S.parse(buf);
+
+		if (!msg)
+			return;
+		if (msg.status != null)
+			return on_response(msg, from);
+
+		switch (msg.method) {
+		case 'REGISTER': return on_register(msg, from);
+		case 'INVITE':   return on_invite(msg, from);
+		case 'ACK':      return on_ack(msg);
+		case 'CANCEL':   return on_cancel(msg, from);
+		case 'BYE':      return on_bye(msg, from);
+		case 'OPTIONS':
+			return send(S.response(msg, 200, 'OK', { to_tag: tag(), headers: [
+				[ 'Allow', 'INVITE, ACK, CANCEL, BYE, OPTIONS, REGISTER' ] ] }), source(from));
+		default:
+			return send(S.response(msg, 501, 'Not Implemented', { to_tag: tag() }), source(from));
+		}
+	};
+
+	return {
+		on_packet: on_packet,
+		on_call_event: on_call_event,
+		bindings: () => bindings,
+		call: () => call,
+	};
+}
+
+return { create: create };
