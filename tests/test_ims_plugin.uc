@@ -54,6 +54,31 @@ eq(tlv.pack(P.VOICE.messages.DIAL_CALL.req, { number: '+4912' }), T(0x01, '+4912
 eq(tlv.pack(P.VOICE.messages.DIAL_CALL.req, { number: '+4912', call_type: 2 }), T(0x01, '+4912') + T(0x10, u8(2)),
 	'voice dial: call type TLV 0x10 as u8');
 
+// PDC Load Config: 0x01 = type u32 (SOFTWARE = 1), u8-prefixed id, total
+// size u32, u16-prefixed chunk; then 0x10 token u32 (libqmi 1.38)
+let cid = P.hex_to_bin('a1b2');
+eq(cid, chr(0xa1, 0xb2), 'pdc: hex id to bytes');
+eq(tlv.pack(P.PDC.messages.LOAD_CONFIG.req, { chunk: P.pdc_chunk('ABC', cid, 0), token: 7 }),
+	T(0x01, u32(1) + u8(2) + chr(0xa1, 0xb2) + u32(3) + u16(3) + 'ABC') + T(0x10, u32(7)),
+	'pdc load config: chunk TLV layout, type software');
+
+// a file over one chunk: 1024 bytes, then the rest, total size in both
+let big = '';
+for (let i = 0; i < 1500; i++)
+	big += 'x';
+let c0 = P.pdc_chunk(big, cid, 0), c1 = P.pdc_chunk(big, cid, 1024);
+eq([ c0.chunk_len, c0.total, c1.chunk_len, c1.total ], [ 1024, 1500, 476, 1500 ],
+	'pdc load config: 1024-byte chunks, total size in each');
+
+// Load Config indication: 0x01 result u16, 0x10 token, 0x11 received,
+// 0x12 remaining, 0x13 frame reset
+let li = tlv.unpack(P.PDC.messages.LOAD_CONFIG_IND.ind,
+	T(0x01, u16(0)) + T(0x10, u32(7)) + T(0x11, u32(1024)) + T(0x12, u32(476)));
+eq([ li.result, li.token, li.received, li.remaining ], [ 0, 7, 1024, 476 ], 'pdc load ind: fields');
+
+eq(tlv.pack(P.PDC.messages.ACTIVATE_CONFIG.req, { config_type: 1, token: 9 }),
+	T(0x01, u32(1)) + T(0x10, u32(9)), 'pdc activate: type and token');
+
 // ---- ops over a fake client ---------------------------------------------------
 
 let answers = {

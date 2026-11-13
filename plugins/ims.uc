@@ -19,7 +19,10 @@
 
 'use strict';
 
-// ---- schemas (libqmi 1.38) ---------------------------------------------
+import * as uloop from 'uloop';
+import * as fs from 'fs';
+
+// ---- schemas (libqmi 1.38)---------------------------------------------
 
 // IMSA, service 0x21
 const IMSA = {
@@ -72,6 +75,14 @@ const IMSA = {
 			req: { binding: { t: 0x10, f: 'u32' } },
 			resp: {},
 		},
+		// Vendor IDL (ip_multimedia_subsystem_application_v01.c): Get IMS
+		// Block Status 0x0037, 0x10/0x11/0x12 failure on WWAN/WLAN/C-IWLAN
+		// (aggregates; kept raw)
+		GET_BLOCK_STATUS: {
+			id: 0x0037,
+			req: {},
+			resp: {},
+		},
 		SERVICES_STATUS_IND: {
 			id: 0x0024,
 			ind: {
@@ -109,6 +120,39 @@ const IMS = {
 				ussd:      { t: 0x1C, f: 'u8' },
 			},
 		},
+		// Vendor IDL (ip_multimedia_subsystem_settings_v01.c): Get QIPCall
+		// Config 0x0037, 0x12 mobile_data_enabled, 0x13 volte_enabled
+		GET_QIPCALL: {
+			id: 0x0037,
+			req: {},
+			resp: {
+				vt:          { t: 0x11, f: 'u8' },
+				mobile_data: { t: 0x12, f: 'u8' },
+				volte:       { t: 0x13, f: 'u8' },
+			},
+		},
+		// Same IDL: Set IMS Service Enable Config 0x008F — the AP-side switch
+		// that tells the call manager VoLTE is allowed (the IDL default is
+		// DISABLED; the RIL sends it when the framework enables voice). A
+		// device without a RIL never did, and the modem then refuses MO calls
+		// instead of routing them to IMS. TLV numbering starts at 0x10
+		// (result = 0x02): volte 0x10, vt 0x11, mobile_data 0x12, wifi 0x14,
+		// ims_service 0x18, ut 0x19, sms 0x1A, ussd 0x1C — the GET 0x0090
+		// tail (reg/ut/sms/ussd) is HW-verified on the RG650E.
+		SET_SERVICE_ENABLE: {
+			id: 0x008F,
+			req: {
+				volte:       { t: 0x10, f: 'u8' },
+				vt:          { t: 0x11, f: 'u8' },
+				mobile_data: { t: 0x12, f: 'u8' },
+				wifi:        { t: 0x14, f: 'u8' },
+				ims_service: { t: 0x18, f: 'u8' },
+				ut:          { t: 0x19, f: 'u8' },
+				sms:         { t: 0x1A, f: 'u8' },
+				ussd:        { t: 0x1C, f: 'u8' },
+			},
+			resp: {},
+		},
 	},
 };
 
@@ -126,6 +170,26 @@ const NAS = {
 				voice_domain: { t: 0x2A, f: 'u32' },	// QmiNasLteVoiceDomain
 			},
 		},
+		// Vendor IDL (network_access_service_v01.c): Get IMS Preference
+		// Status 0x0073, 0x10 ims_pref = sys_mode (1-byte enum) + call-type
+		// mask u64 (VOICE 0x01, SMS 0x02). What the call manager thinks IMS
+		// may carry, as opposed to what IMSA reports.
+		GET_IMS_PREF: {
+			id: 0x0073,
+			req: {},
+			resp: { pref: { t: 0x10, f: { sys_mode: 'u8', call_types: 'u64' } } },
+		},
+		// Get System Selection Preference 0x0034 (libqmi and vendor IDL):
+		// 0x18 service domain, 0x1F usage setting, 0x20 voice domain pref
+		GET_SSP: {
+			id: 0x0034,
+			req: {},
+			resp: {
+				srv_domain:   { t: 0x18, f: 'u32' },
+				usage:        { t: 0x1F, f: 'u32' },
+				voice_domain: { t: 0x20, f: 'u32' },
+			},
+		},
 	},
 };
 
@@ -141,6 +205,15 @@ const VOICE = {
 		INDICATION_REGISTER: {
 			id: 0x0003,
 			req: { call_events: { t: 0x13, f: 'u8' } },
+			resp: {},
+		},
+		// Vendor IDL voice_v02 0x0044: bind the client to a subscription
+		// (PRIMARY 0 / SECONDARY 1 / TERTIARY 2), mandatory field subs_type.
+		// On a DSDS modem an unbound voice client has no user context, and
+		// the dial dies in the modem's own bridge with InvalidArgument (48).
+		BIND_SUBSCRIPTION: {
+			id: 0x0044,
+			req: { subs_type: { t: 0x01, f: 'u8' } },
 			resp: {},
 		},
 		// 0x10 call type: not in libqmi 1.38's Dial Call, but oFono's QMI
@@ -179,6 +252,94 @@ const VOICE = {
 		},
 	},
 };
+
+// PDC, service 0x24: only the two messages the wwand core leaves out on
+// purpose (it lists, reads and selects; see its codec/schema/pdc.uc). Loading
+// a carrier configuration belongs here, in a plugin that is not for upstream.
+//
+// libqmi QmiPdcConfigurationType: PLATFORM = 0, SOFTWARE = 1. Carrier MBNs
+// (mcfg_sw) are SOFTWARE, and that is the type qmicli --pdc-load-config sends.
+// A load with 0 asks the modem for a platform (mcfg_hw) config.
+const PDC_TYPE_SOFTWARE = 1;
+const PDC_CHUNK = 1024;		// qmicli's LOAD_CONFIG_CHUNK_SIZE
+
+const PDC = {
+	service: 0x24,
+	messages: {
+		// without it the modem acknowledges every request and never indicates
+		REGISTER: {
+			id: 0x0020,
+			req:  { enable: { t: 0x10, f: 'u8' } },
+			resp: {},
+		},
+		// libqmi "Load Config" 0x26, input 0x01 Config Chunk: type u32, id
+		// (u8-prefixed bytes), total size u32, chunk (u16-prefixed bytes);
+		// 0x10 token. The id is the SHA-1 of the whole file (qmicli), which is
+		// also what List Configs then reports for it.
+		LOAD_CONFIG: {
+			id: 0x0026,
+			req: {
+				chunk: { t: 0x01, f: {
+					type: 'u32', id_len: 'u8', id: 'bytes',
+					total: 'u32', chunk_len: 'u16', data: 'bytes',
+				} },
+				token: { t: 0x10, f: 'u32' },
+			},
+			resp: {},
+		},
+		LOAD_CONFIG_IND: {
+			id: 0x0026,
+			ind: {
+				token:       { t: 0x10, f: 'u32' },
+				result:      { t: 0x01, f: 'u16' },
+				received:    { t: 0x11, f: 'u32' },
+				remaining:   { t: 0x12, f: 'u32' },
+				frame_reset: { t: 0x13, f: 'u8' },
+			},
+		},
+		// libqmi "Activate Config" 0x27: 0x01 config type u32, 0x10 token.
+		// Applies the selected config; the modem resets to do it.
+		ACTIVATE_CONFIG: {
+			id: 0x0027,
+			req: {
+				config_type: { t: 0x01, f: 'u32' },
+				token:       { t: 0x10, f: 'u32' },
+			},
+			resp: {},
+		},
+		ACTIVATE_CONFIG_IND: {
+			id: 0x0027,
+			ind: {
+				result: { t: 0x01, f: 'u16' },
+				token:  { t: 0x10, f: 'u32' },
+			},
+		},
+	},
+};
+
+// one Load Config request: the chunk at `off` of the file `data`
+function pdc_chunk(data, id, off)
+{
+	let n = length(data) - off;
+
+	if (n > PDC_CHUNK)
+		n = PDC_CHUNK;
+
+	return {
+		type: PDC_TYPE_SOFTWARE, id_len: length(id), id: id,
+		total: length(data), chunk_len: n, data: substr(data, off, n),
+	};
+}
+
+function hex_to_bin(h)
+{
+	let out = '';
+
+	for (let i = 0; i + 1 < length(h); i += 2)
+		out += chr(hex(substr(h, i, 2)));
+
+	return out;
+}
 
 // ---- enum names (libqmi 1.38 qmi-enums-*.h) -----------------------------
 
@@ -283,9 +444,23 @@ function create(deps)
 
 		bind(s.imsa, 'imsa', () => bind(s.ims, 'ims', () => {
 			s.imsa.request('REGISTER_INDICATIONS', { reg: 1, services: 1 }, () => null);
+			// The IDL default is volte DISABLED; a device without a RIL never
+			// enables it, and the call manager then refuses MO calls instead
+			// of routing them to IMS. The write is idempotent and takes effect
+			// at the next registration — re-apply on every open, so a modem
+			// reset cannot leave the box without it.
+			s.ims.request('SET_SERVICE_ENABLE', {
+				volte: 1, mobile_data: 1, ims_service: 1, ut: 1, sms: 1, ussd: 1,
+			}, (e) => log(e ? 'warn' : 'info', sprintf('ims %s: volte enable %s', ref,
+				e ? sprintf('refused (%s)', err_of(e)) : 'sent')));
 			done();
 		}));
 		s.voice.request('INDICATION_REGISTER', { call_events: 1 }, () => null);
+		// the voice client must own a subscription on a DSDS modem, or every
+		// dial dies inside the modem's QMI/AT bridge (InvalidArgument)
+		s.voice.request('BIND_SUBSCRIPTION', { subs_type: 0 }, (e) =>
+			log(e ? 'warn' : 'info', sprintf('ims %s: voice subs bind %s', ref,
+				e ? sprintf('refused (%s)', err_of(e)) : 'primary 0')));
 	};
 
 	// Open the four clients once per modem and keep them: the indications
@@ -399,6 +574,66 @@ function create(deps)
 		attempt(0);
 	};
 
+	// A PDC client of our own, only for the length of one op: PDC answers on
+	// indications that carry the request's token, so the client keeps a
+	// waiter table. cb(err, { ask, close }).
+	let pdc_open = (ref, cb) => deps.qmi_client(ref, PDC, (err, cl) => {
+		if (err)
+			return cb({ error: 'qmi_client', service: 'pdc', detail: err });
+
+		let waits = {}, token = 0;
+		let deliver = (d) => {
+			let key = sprintf('%u', d?.token ?? 0);
+			let w = waits[key];
+
+			if (!w)
+				return;
+			delete waits[key];
+			w.timer.cancel();
+			// the operation's verdict is on the indication, not the ack
+			(d.result != null && d.result != 0)
+				? w.cb({ error: 'pdc', code: d.result }, d)
+				: w.cb(null, d);
+		};
+
+		cl.on('LOAD_CONFIG_IND', deliver);
+		cl.on('ACTIVATE_CONFIG_IND', deliver);
+
+		let close = () => {
+			for (let k, w in waits)
+				w.timer.cancel();
+			waits = {};
+			deps.qmi_release(ref, cl);
+		};
+		let ask = (name, args, ms, done) => {
+			let key = sprintf('%u', ++token);
+
+			waits[key] = {
+				cb: done,
+				timer: uloop.timer(ms, () => {
+					delete waits[key];
+					done({ error: 'pdc_timeout', op: name });
+				}),
+			};
+			cl.request(name, { ...args, token: token }, (e) => {
+				// a refused request gets no indication
+				if (e && waits[key]) {
+					waits[key].timer.cancel();
+					delete waits[key];
+					done(e);
+				}
+			});
+		};
+
+		cl.request('REGISTER', { enable: 1 }, (e) => {
+			if (e) {
+				close();
+				return cb({ error: 'pdc_register', detail: err_of(e) });
+			}
+			cb(null, { ask: ask, close: close });
+		});
+	});
+
 	return {
 		status: (ref) => {
 			let s = st[ref];
@@ -465,6 +700,32 @@ function create(deps)
 				});
 			}),
 
+			// why the call manager might refuse a VoLTE origination
+			diag: (ref, ext, args, cb) => use(ref, cb, (s, done) =>
+				all([ [ 'pref', s.nas, 'GET_IMS_PREF' ], [ 'ssp', s.nas, 'GET_SSP' ],
+				      [ 'qip', s.ims, 'GET_QIPCALL' ], [ 'block', s.imsa, 'GET_BLOCK_STATUS' ] ], (r) => {
+					for (let k, x in r)
+						if (stale(x[0]))
+							return done(null, null, true);
+
+					let one = (x, f) => x[0] ? { error: err_of(x[0]) } : f(x[1]);
+
+					done(null, {
+						ims_pref: one(r.pref, (d) => d.pref ? {
+							sys_mode: d.pref.sys_mode,
+							call_types: sprintf('0x%x', d.pref.call_types),
+							voice: !!(d.pref.call_types & 1), sms: !!(d.pref.call_types & 2),
+						} : { absent: true, raw: raw_of(d) }),
+						selection: one(r.ssp, (d) => ({
+							srv_domain: d.srv_domain, usage: d.usage, voice_domain: d.voice_domain,
+						})),
+						qipcall: one(r.qip, (d) => ({
+							volte: d.volte, mobile_data: d.mobile_data, vt: d.vt,
+						})),
+						block: one(r.block, (d) => ({ raw: raw_of(d) })),
+					});
+				})),
+
 			calls: (ref, ext, args, cb) => use(ref, cb, (s, done) =>
 				s.voice.request('GET_ALL_CALL_INFO', {}, (e, d) => {
 					if (stale(e))
@@ -510,12 +771,106 @@ function create(deps)
 					stale(e) ? done(null, null, true)
 					         : e ? done({ error: err_of(e) }) : done(null, { id: d?.id }))),
 
+			// Tell the call manager that VoLTE is allowed (SET_IMS_SERVICE_ENABLE
+			// _CONFIG, the message a RIL sends when the framework enables
+			// voice). The modem's default on a data-only build is volte off;
+			// without this, every dial is refused before any radio activity.
+			volte_enable: (ref, ext, args, cb) => use(ref, cb, (s, done) => {
+				let on = args?.volte ?? 1;
+
+				s.ims.request('SET_SERVICE_ENABLE', {
+					volte: on, mobile_data: args?.mobile_data ?? 1,
+					ims_service: args?.reg ?? 1, ut: args?.ut ?? 1,
+					sms: args?.sms ?? 1, ussd: args?.ussd ?? 1,
+				}, (e, d) => {
+					if (stale(e))
+						return done(null, null, true);
+					if (e)
+						return done({ error: err_of(e), raw: raw_of(d) });
+					log('info', sprintf('ims %s: volte enabled: %d', ref, on));
+					done(null, { volte: on });
+				});
+			}),
+
 			hangup: (ref, ext, args, cb) => use(ref, cb, (s, done) =>
 				s.voice.request('END_CALL', { id: +(args?.id ?? 1) }, (e, d) =>
 					stale(e) ? done(null, null, true)
 					         : e ? done({ error: err_of(e) }) : done(null, { id: d?.id }))),
+
+			// Load a carrier MBN file into the modem's config store (PDC Load
+			// Config, as qmicli --pdc-load-config). It is then listed by
+			// modem_carrier_config "list" under its SHA-1 and selected with
+			// "set" + mbn_activate. args: { path }
+			mbn_load: (ref, ext, args, cb) => {
+				let path = args?.path;
+
+				if (type(path) != 'string' || substr(path, 0, 1) != '/')
+					return cb({ error: 'invalid_path' });
+
+				let data = fs.readfile(path);
+
+				if (data == null)
+					return cb({ error: 'read_failed', detail: fs.error() });
+				if (length(data) < 64 || length(data) > 4 * 1024 * 1024)
+					return cb({ error: 'invalid_size', size: length(data) });
+
+				let digest = require('digest');
+				let id_hex = digest.sha1(data);
+				let id = hex_to_bin(id_hex);
+
+				pdc_open(ref, (err, p) => {
+					if (err)
+						return cb(err);
+
+					let off = 0, n = 0, send;
+					let fin = (e, r) => {
+						p.close();
+						log(e ? 'warn' : 'info', sprintf('ims %s: mbn load %s (%s): %s', ref, path, id_hex,
+							e ? sprintf('%J at %d of %d', e, off, length(data)) : 'done'));
+						e ? cb({ ...e, id: id_hex, offset: off, size: length(data) }) : cb(null, r);
+					};
+
+					send = () => {
+						let c = pdc_chunk(data, id, off);
+
+						off += c.chunk_len;
+						n++;
+						p.ask('LOAD_CONFIG', { chunk: c }, 10000, (e, d) => {
+							if (e)
+								return fin(e);
+							if (d?.frame_reset)
+								return fin({ error: 'frame_reset' });
+							if (d?.remaining == 0)
+								return fin(null, { id: id_hex, size: length(data), chunks: n });
+							if (off >= length(data))
+								return fin({ error: 'modem_wants_more', remaining: d?.remaining });
+							send();
+						});
+					};
+					send();
+				});
+			},
+
+			// Apply the selected carrier config (PDC Activate Config). The
+			// modem resets to do it, so the indication may never come: a
+			// timeout here means "sent", and modem_carrier_config "get" after
+			// the reset tells whether it took.
+			mbn_activate: (ref, ext, args, cb) => pdc_open(ref, (err, p) => {
+				if (err)
+					return cb(err);
+
+				p.ask('ACTIVATE_CONFIG', { config_type: PDC_TYPE_SOFTWARE }, 5000, (e) => {
+					p.close();
+					// the clients we keep die with the reset
+					drop(ref);
+					log('info', sprintf('ims %s: mbn activate: %s', ref, e ? sprintf('%J', e) : 'ok'));
+					if (e?.error == 'pdc_timeout')
+						return cb(null, { sent: true, indication: false });
+					e ? cb(e) : cb(null, { sent: true, indication: true });
+				});
+			}),
 		},
-		read_ops: [ 'status', 'calls' ],
+		read_ops: [ 'status', 'calls', 'diag' ],
 
 		stop: () => {
 			for (let ref in keys(st))
@@ -527,7 +882,8 @@ function create(deps)
 
 return {
 	// for the tests: the schemas and the call-list builder
-	IMSA: IMSA, IMS: IMS, NAS: NAS, VOICE: VOICE, calls_of: calls_of,
+	IMSA: IMSA, IMS: IMS, NAS: NAS, VOICE: VOICE, PDC: PDC, calls_of: calls_of,
+	pdc_chunk: pdc_chunk, hex_to_bin: hex_to_bin,
 
 	name: 'ims',
 	options: [],
