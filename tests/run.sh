@@ -8,6 +8,8 @@ WWAND_SRC=${WWAND_SRC:-$TESTDIR/../../wwand/src-ucode}
 [ -d "$WWAND_SRC" ] || { echo "wwand source tree not found: $WWAND_SRC" >&2; exit 1; }
 ln -sfn "$WWAND_SRC" "$TESTDIR/wwand"
 ln -sfn ../plugins/ims.uc "$TESTDIR/ims_plugin.uc"
+ln -sfn ../sipd/sip.uc "$TESTDIR/sipd_sip.uc"
+ln -sfn ../sipd/core.uc "$TESTDIR/sipd_core.uc"
 
 if [ -x "$HOME/.local/bin/ucode" ]; then
 	UCODE="$HOME/.local/bin/ucode"

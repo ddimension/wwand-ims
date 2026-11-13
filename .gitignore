@@ -1,2 +1,4 @@
 tests/wwand
 tests/ims_plugin.uc
+tests/sipd_sip.uc
+tests/sipd_core.uc
