@@ -673,12 +673,16 @@ function create(deps)
 		// Keeps the clients open, so the indications (and with them the
 		// wwand.ims.* events sipd rings phones on) run from the daemon start
 		// and come back after a modem reset, without anyone calling an op.
-		// A modem without IMS (no IMSA in its service list, or NCM) is not
-		// asked again.
+		// A modem without IMS (no IMSA in its service list, or NCM) is asked
+		// again on every tick, and logged once: the list is re-read on every
+		// modem start, and a modem gains IMSA when IMS is switched on there
+		// (AT+QCFG="ims",1 on the EG25-G, HW-observed 2026-11-13). The refusal
+		// is local (wwand modem.uc extra_client checks the list it read), so
+		// asking costs no QMI traffic.
 		tick: (ref, ext) => {
 			let s = st[ref];
 
-			if (s?.no_ims || s?.opening || (s?.ready && !dead(s)))
+			if (s?.opening || (s?.ready && !dead(s)))
 				return;
 			// at once, not when the modem is back: the call-gone event must
 			// not wait for a modem that may take a minute to return
@@ -695,10 +699,16 @@ function create(deps)
 				return;
 			open(ref, (err) => {
 				let why = err?.detail?.error;
+				let s2 = state_of(ref);
 
 				if (why == 'service_unavailable' || why == 'unsupported') {
-					state_of(ref).no_ims = why;
-					log('info', sprintf('ims %s: no IMS on this modem (%s: %s)', ref, err.service, why));
+					if (s2.no_ims != why)
+						log('info', sprintf('ims %s: no IMS on this modem (%s: %s)', ref, err.service, why));
+					s2.no_ims = why;
+				}
+				else if (!err && s2.no_ims) {
+					log('info', sprintf('ims %s: IMS is available now', ref));
+					s2.no_ims = null;
 				}
 			});
 		},

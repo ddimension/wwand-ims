@@ -242,16 +242,26 @@ eq(opened3, 8, 'tick after a reset: four new clients');
 eq(inst3.status('m3').text, 'not_registered, voice available', 'tick after a reset: the state is read anew');
 answers.GET_REG_STATUS = { status: 2, tech: 1 };
 
-let asked4 = 0;
+// a modem without IMSA is asked again (the refusal is local) and logged
+// once; once IMS is switched on there, the next tick opens the clients
+let asked4 = 0, logs4 = [], has_imsa = false;
 let inst4 = P.create({
-	log: () => null,
-	qmi_client: (ref, schema, cb) => { asked4++; cb({ error: 'service_unavailable' }, null); },
+	log: (lv, msg) => push(logs4, msg),
+	qmi_client: (ref, schema, cb) => {
+		asked4++;
+		(has_imsa || schema.service != 0x21) ? cb(null, fake(schema)) : cb({ error: 'service_unavailable' }, null);
+	},
 	qmi_release: () => null,
 });
 inst4.tick('m4', {});
 inst4.tick('m4', {});
-eq(asked4, 1, 'tick: a modem without IMSA is asked once');
+eq(asked4, 2, 'tick: a modem without IMSA is asked on every tick');
+eq(length(filter(logs4, (m) => index(m, 'no IMS') >= 0)), 1, 'tick: and logged once');
 eq(inst4.status('m4'), null, 'tick: and has no status row');
+has_imsa = true;
+inst4.tick('m4', {});
+flush();
+eq(inst4.status('m4')?.text, 'registered, voice available', 'tick: IMSA switched on later is picked up');
 
 // a refused VoLTE switch on open is logged, the open still completes
 let logs6 = [], st6 = null;
