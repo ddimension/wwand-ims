@@ -22,7 +22,7 @@ So wwand-ims does two things:
 1. **Brings the operator settings into the modem**, from a profile
    (section 3). That is the "missing MBN" problem.
 2. **Bridges a LAN SIP phone** to the modem's call control (QMI Voice) and
-   audio (USB PCM).
+   audio (PCM over USB, or over the module's PCM pins — see section 5.3).
 
 ## 2. Components
 
@@ -130,6 +130,37 @@ modems answer `AT+QPCMV?` and carry the UAC field in `AT+QCFG="USBCFG"`
 
 None of them carries a Vodafone IoT MBN.
 
+### 5.3 Audio paths per module and bus (checked 2026-11-13)
+
+The PCIe/MHI bus itself carries no audio: Qualcomm holds a patent for
+voice streams over PCIe (US2019/0251056), but no modem is documented to
+implement it, and mainline MHI knows only IP/control/diag channels. So
+audio is **not a bus question but a module-and-board question**:
+
+| Path | Needs | Works when attached via |
+|---|---|---|
+| USB UAC (ALSA) / QPCMV (tty) | the M.2 slot's USB pins wired — common even on PCIe boards (the WH3000 Pro wires its M.2 slot to USB, `board.uc`) | USB or PCIe |
+| PCM/I2S pins on the M.2 connector | a voice-capable module **and** board routing of those pins to the host I2S/PCM controller | any bus |
+
+Per module:
+
+| Modem | PCM pins | USB voice | Voice verdict |
+|---|---|---|---|
+| RG650E | n/a (USB module) | QPCMV + UAC field, measured | dials work (0456d9b) |
+| RG502Q | not checked | QPCMV + UAC field, measured | open |
+| EG25-G | yes (classic voice module) | QPCMV + UAC field, measured | yes |
+| EG06 | not checked | QPCMV + UAC field, measured | open |
+| RG520N | PCM + I2S (SLIC/Codec, Bluetooth) | yes | Quectel's voice M.2; VoLTE optional per SKU |
+| RM520N-EU | pins 20/22/24/28 | yes | voice possible |
+| RM520N-GL | pins RESERVED (GL variant) | ttyUSB PCM, experimental App Note | Quectel: data-only |
+| FM350-GL | none | USB 2.0 debug only | data-only (docomo cert: CS Voice NS, VoLTE NS) |
+
+Consequence for `mediad`: three PCM sources — UAC via ALSA, the QPCMV
+tty, and the host I2S/PCM controller for voice-capable modules whose
+board routes the pins. On a PCIe-only board with a data SKU (FM350-GL,
+RM520N-GL) there is no audio path at all: the silicon, not the bus, is
+the limit.
+
 ## 6. Test device
 
 The Chateau's RG650E (newest firmware and MBNs, QMI). The GDSP SIM needs
@@ -155,4 +186,10 @@ documented). The NR7101 is out: its IDEMIA card must stay.
   Both are internal and not part of this repo.
 - libqmi 1.38, libmbim 1.32 (OpenWrt build tree, read 2026-11-13).
 - Our own HW measurements as named above.
+- Audio paths (section 5.3): Quectel RM520N Series Hardware Design
+  (PCM pins EU-only), Quectel RG520N Hardware Design (PCM + I2S), Quectel
+  "RM520N-GL Voice over ttyUSB Application Note V1.0", Quectel forum
+  34404 (RM520N data-only), Fibocom FM350-GL Hardware Guide V1.0.8 and
+  its docomo certification (CS Voice/VoLTE not supported), Qualcomm
+  patent US2019/0251056 (audio over PCIe).
 - No Qualcomm-confidential material, by rule.
