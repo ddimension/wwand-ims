@@ -1,10 +1,14 @@
 #!/usr/bin/env ucode
 // SPDX-License-Identifier: GPL-2.0-only
 // Copyright (C) 2026 André Valentin <avalentin@marcant.net>
-// sipd: SIP for LAN phones, bridged to the modem's IMS calls through the
-// wwand ims plugin. Reads /etc/config/wwand_ims (sip_gateway, extension),
-// listens on UDP, follows the plugin's wwand.ims.call events and calls its
-// ops over ubus.
+// sipd: SIP for LAN phones or a PBX trunk, bridged to IMS calls. Two
+// backends (config ims_modem, option backend):
+//   'ue'  the router's own IMS UE (sipd/line_ue.uc): it registers over the
+//         IMS PDN wwand carries (option ims_iface, option vrf), the SDP and
+//         the RTP are relayed 1:1 (sipd/relay.uc), AMR-WB/AMR end to end;
+//   'qmi' the modem's IMS through the wwand ims plugin (its ops over ubus,
+//         its wwand.ims.call events), the default.
+// Reads /etc/config/wwand_ims (sip_gateway, extension, ims_modem).
 //
 //   ucode -L /usr/share/wwand-ims /usr/share/wwand-ims/sipd.uc
 
@@ -15,6 +19,9 @@ import * as ubus from 'ubus';
 import * as uci from 'uci';
 import * as socket from 'socket';
 import * as fs from 'fs';
+import * as CALL from 'ue_call';
+import * as LINE from 'sipd_line_ue';
+import * as RELAY from 'sipd_relay';
 
 let CORE = require('sipd_core');
 
@@ -30,7 +37,9 @@ let log = (lv, msg) => {
 let cur = uci.cursor();
 let gw = null, users = {}, modem = null;
 
+let im = null;
 cur.foreach('wwand_ims', 'sip_gateway', (s) => { gw ??= s; });
+cur.foreach('wwand_ims', 'ims_modem', (s) => { im ??= s; });
 cur.foreach('wwand_ims', 'extension', (s) => {
 	if (s.username && s.password) {
 		users[s.username] = { password: s.password };
@@ -64,7 +73,8 @@ if (!listen_ip) {
 
 let port = +(gw.port ?? 5060);
 let codecs = filter(gw.codec ?? [ 'pcma', 'pcmu' ], (c) => c in { pcma: 1, pcmu: 1, g722: 1 });
-modem ??= 'wwmodem0';
+modem ??= im?.modem ?? 'wwmodem0';
+let backend = im?.backend ?? 'qmi';
 
 // ---- transport ----------------------------------------------------------------------
 
@@ -131,6 +141,30 @@ let media = {
 	},
 };
 
+// the phones' / PBX's registrations survive a restart of sipd (they are kept
+// until their expiry; a PBX would else be unreachable until it registers again)
+const BINDINGS = '/var/run/wwand-ims-sipd.bindings';
+
+// ---- the UE line (backend 'ue') -------------------------------------------------------------
+
+let core = null, line = null, relay = null;
+
+if (backend == 'ue') {
+	let xfrm = null;
+	try { xfrm = require('wwand_ims_xfrm'); } catch (e) { xfrm = null; }
+	if (!xfrm) {
+		log('error', 'sipd: backend ue needs the wwand_ims_xfrm module');
+		exit(1);
+	}
+	relay = RELAY.create({ socket: socket, uloop: uloop, lan_ip: listen_ip,
+		ims_ip: () => line?.ue_addr(), vrf: im.vrf, log: log,
+		base: +(im.rtp_base ?? 40000), span: +(im.rtp_span ?? 200) });
+	line = LINE.create({ bus: bus, uloop: uloop, socket: socket, xfrm: xfrm,
+		modem: modem, iface: im.ims_iface ?? 'wwims', vrf: im.vrf, apn: im.ims_apn,
+		pcscf: im.pcscf, relay: relay, log: log,
+		on_incoming: (inc) => core?.on_line_incoming(inc) });
+}
+
 // ---- the plugin ---------------------------------------------------------------------------
 
 let ims = (op, args, cb) => {
@@ -141,12 +175,22 @@ let ims = (op, args, cb) => {
 	});
 };
 
-let core = CORE.create({
+core = CORE.create({
 	cfg: { ip: listen_ip, port: port, realm: gw.realm ?? 'wwand-ims', modem: modem,
 	       codecs: codecs, users: users },
 	send: send,
 	ims: ims,
 	media: media,
+	line: line, relay: relay,
+	bindings_changed: (b) => {
+		let f = fs.open(BINDINGS + '.new', 'w');
+		if (f) {
+			f.write(sprintf('%J', b));
+			f.close();
+			fs.rename(BINDINGS + '.new', BINDINGS);
+		}
+	},
+	sdp: { relay: CALL.sdp_relay, media: CALL.sdp_media },
 	timer: (ms, fn) => {
 		let t = uloop.timer(ms, fn);
 		return { cancel: () => t.cancel() };
@@ -156,7 +200,31 @@ let core = CORE.create({
 	log: log,
 });
 
-bus.listener('wwand.ims.call', (type, data) => core.on_call_event(data));
+let saved = null;
+try { saved = json(fs.readfile(BINDINGS) ?? 'null'); } catch (e) { saved = null; }
+let restored = core.restore(saved);
+if (restored)
+	log('info', sprintf('sipd: %d registration(s) restored from %s', restored, BINDINGS));
+
+if (line)
+	line.start();
+else
+	bus.listener('wwand.ims.call', (type, data) => core.on_call_event(data));
+
+// SIGTERM / SIGINT: the UE de-REGISTERs and takes its SAs down first
+let stopping = false;
+let stop = () => {
+	if (stopping)
+		return;
+	stopping = true;
+	log('info', 'sipd: stopping');
+	if (!line)
+		return uloop.end();
+	uloop.timer(5000, () => uloop.end());
+	line.stop(() => uloop.end());
+};
+signal('SIGTERM', stop);
+signal('SIGINT', stop);
 
 uloop.handle(sock.fileno(), () => {
 	let from = {};
@@ -234,6 +302,7 @@ uloop.handle(tcp.fileno(), () => {
 	}, uloop.ULOOP_READ);
 }, uloop.ULOOP_READ);
 
-log('info', sprintf('sipd: listening on UDP and TCP %s:%d for %s, modem %s, codecs %s',
-	listen_ip, port, join(',', keys(users)), modem, join(',', codecs)));
+log('info', sprintf('sipd: listening on UDP and TCP %s:%d for %s, modem %s, backend %s%s',
+	listen_ip, port, join(',', keys(users)), modem, backend,
+	line ? sprintf(' (IMS PDN %s, VRF %s)', im.ims_iface ?? 'wwims', im.vrf ?? '-') : ', codecs ' + join(',', codecs)));
 uloop.run();

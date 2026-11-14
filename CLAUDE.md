@@ -28,10 +28,10 @@ audibly). VoWiFi/strongSwan = phase 2. Details and phases:
 | `ue/secagree.uc` | Security-Client/-Server/-Verify, ESP keys (TS 33.203 Annex I), the four SAs + policies (7.1), apply/remove/reserve over the xfrm module |
 | `src/xfrm/` | C ucode module `wwand_ims_xfrm` (NETLINK_XFRM: alloc_spi, sa_add/del, policy_add/del, error) |
 | `plugins/ims.uc` | wwand plugin, runs **inside the wwand daemon**: IMS state, call control over QMI (IMSA, IMS, NAS, Voice) — the modem-IMS backend. `ubus call wwand modem_plugin '{"modem":…,"plugin":"ims","op":"status\|calls\|dial\|answer\|hangup"}'`; installed at `/usr/share/ucode/wwand/plugins/ims.uc` |
-| `sipd/` | `sipd.uc` (entry), `core.uc`, `sip.uc`: SIP registrar + B2BUA for LAN phones. Reads `/etc/config/wwand_ims` |
+| `sipd/` | `sipd.uc` (entry), `core.uc`, `sip.uc`: SIP registrar + B2BUA for LAN phones or a PBX trunk. Reads `/etc/config/wwand_ims`. Backend `ue` (`ims_modem` option `backend`): `line_ue.uc` (the router's own IMS UE as the line: registration, refresh, MO/MT), `relay.uc` (RTP 1:1 between LAN and the IMS VRF); backend `qmi`: the plugin's call control |
 | `src/mcfg/` | C, MBN (MCFG) inspection; only SHA-2 so far |
-| `files/` | `wwand_ims.config` (the config model / profiles), `wwand-ims-sipd.init`, `ims-network.example` (IMS PDN in its VRF + firewall), `wwand-ims-l3mdev.hotplug` (restores the l3mdev rules netifd flushes) |
-| `tools/` | `efs-dump.sh` (read-only EFS snapshots), `calltest.sh`, `sipcall.uc`, `eg25-voice.uc`, `diag-trace/` (modem F3 tracing over adb) |
+| `files/` | `wwand_ims.config` (the config model / profiles), `wwand-ims-sipd.init` (procd), `ims-network.example` (IMS PDN in its VRF + firewall), `wwand-ims-l3mdev.hotplug` (restores the l3mdev rules netifd flushes), `asterisk-pjsip.example` (sipd as an Asterisk trunk) |
+| `tools/` | `efs-dump.sh` (read-only EFS snapshots), `calltest.sh`, `sipcall.uc`, `eg25-voice.uc`, `diag-trace/` (modem F3/SIP tracing over adb), `ims-register.uc` (the UE spike driver: register, call, answer, echo), `rtp-amrwb2wav.py`, `install-sipd.sh` (lays sipd out for the init script until there is a package) |
 | `research/` | per-device notes and EFS snapshots (`rg650e-245/`, `eg25-rpi/`, `op8t-20261113/`) |
 | `docs/design.md` | design, phases, profile mapping (GDSP), the MBN problem, measurements, open questions (licence!) |
 

@@ -1,0 +1,59 @@
+; Asterisk (pjsip.conf): sipd on the router as a trunk, the way a SIP
+; provider such as sipgate is set up. Asterisk registers at sipd; calls go
+; out over the endpoint, incoming ones come to the registered contact_user.
+; HW-tested 2026-11-14 with Asterisk 20 (codec_amr) and the Chateau/RG650E
+; on Vodafone DE: both directions, AMR-WB end to end.
+;
+; Router side (/etc/config/wwand_ims): an `extension` with the same
+; username/password, `sip_gateway` listening on the address below.
+
+[wwand_ims_auth]
+type=auth
+auth_type=userpass
+username=asterisk
+password=change-me
+realm=wwand-ims
+
+[wwand_ims_reg]
+type=registration
+transport=transport-udp           ; a UDP transport of yours
+outbound_auth=wwand_ims_auth
+server_uri=sip:192.168.1.1:5060   ; sipd: sip_gateway listen/port
+client_uri=sip:asterisk@192.168.1.1
+contact_user=wwand_ims            ; the extension incoming calls arrive on
+retry_interval=60
+expiration=600
+auth_rejection_permanent=false
+
+[wwand_ims_trunk]
+type=endpoint
+transport=transport-udp
+context=from-wwand-ims            ; incoming calls
+disallow=all
+allow=amrwb                       ; sipd relays the codecs, no transcoding:
+allow=amr                         ; AMR-WB/AMR only
+dtmf_mode=rfc4733
+outbound_auth=wwand_ims_auth      ; sipd challenges INVITEs (407)
+aors=wwand_ims_trunk
+from_domain=192.168.1.1
+direct_media=no
+rtp_symmetric=yes
+force_rport=yes
+rewrite_contact=yes
+
+[wwand_ims_trunk]
+type=aor
+contact=sip:192.168.1.1:5060
+
+[wwand_ims_trunk]
+type=identify
+endpoint=wwand_ims_trunk
+match=192.168.1.1
+
+; Dialplan (extensions.conf):
+;   [from-wwand-ims]
+;   ; the called IMS number is in the To: ${CHANNEL(pjsip,local_uri)}
+;   exten => wwand_ims,1,Dial(PJSIP/phone1,60)
+;
+;   ; out: the number in E.164 with '+' (the UE refuses national numbers)
+;   exten => _0X.,1,Dial(PJSIP/wwand_ims_trunk/sip:+49${EXTEN:1}@192.168.1.1,120)

@@ -433,4 +433,20 @@ ok(s.out[length(s.out) - 1].msg.status == 180 && in_ev[0] == 'incoming', 'rel183
 s.call.accept();
 eq([ s.last().msg.status, s.last().msg.body ], [ 200, '' ], 'rel183: 200 without SDP');
 
+// a CANCEL that crosses our final answer (the call already rejected): 200 for it
+s = setup();
+s.call.incoming(CALL.initial_invite(net_invite(null)), s.ev);
+s.call.reject(480, 'Temporarily Unavailable');
+let n_c = length(s.out);
+eq(s.call.on_message(replace(replace(net_invite(null), 'INVITE sip', 'CANCEL sip'), '10 INVITE', '10 CANCEL')), true,
+	'late CANCEL after reject: ours');
+ok(length(s.out) == n_c + 1 && s.last().msg.status == 200 && SIP.cseq(s.last().msg).method == 'CANCEL',
+	'late CANCEL after reject: 200 for the CANCEL, no second final');
+
+eq(SIP.parse(CALL.no_transaction(replace(replace(net_invite(null), 'INVITE sip', 'BYE sip'), '10 INVITE', '11 BYE'))).status, 481,
+	'no_transaction: a BYE of no call -> 481');
+eq(CALL.no_transaction(replace(replace(net_invite(null), 'INVITE sip', 'ACK sip'), '10 INVITE', '10 ACK')), null,
+	'no_transaction: an ACK gets nothing');
+eq(CALL.no_transaction(net_invite(null)), null, 'no_transaction: an initial INVITE is not for it');
+
 done();

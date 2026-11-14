@@ -188,6 +188,60 @@ export function sdp_answer(offer, addr, port, session, qos, version)
 	return join('\r\n', s) + '\r\n';
 }
 
+// The audio of `src` (an SDP from the other leg of a B2BUA) for this leg:
+// only AMR-WB, AMR and telephone-event, with their payload types, rtpmap
+// and fmtp unchanged, so the RTP can be relayed 1:1 (no transcoding, no
+// payload type rewrite); address and port are ours. null when src carries
+// neither AMR-WB nor AMR.
+export function sdp_relay(src, addr, port, session, qos, version)
+{
+	let pts = null, rtpmap = {}, fmtp = {};
+	let in_audio = false;
+	for (let l in split(replace(src ?? '', /\r/g, ''), '\n')) {
+		let m;
+		if ((m = match(l, /^m=(\S+) [0-9]+ RTP\/AVP (.*)$/))) {
+			in_audio = (m[1] == 'audio');
+			if (in_audio && pts == null)
+				pts = split(trim(m[2]), /\s+/);
+		}
+		else if (in_audio && (m = match(l, /^a=rtpmap:([0-9]+) (.+)$/)))
+			rtpmap[m[1]] = trim(m[2]);
+		else if (in_audio && (m = match(l, /^a=fmtp:([0-9]+) (.+)$/)))
+			fmtp[m[1]] = trim(m[2]);
+	}
+	let keep = filter(pts ?? [], (p) => match(rtpmap[p] ?? '', /^(AMR-WB|AMR|telephone-event)\//i));
+	if (!length(filter(keep, (p) => match(rtpmap[p], /^AMR/i))))
+		return null;
+
+	let fam = index(addr, ':') >= 0 ? 'IP6' : 'IP4';
+	let s = [
+		'v=0',
+		sprintf('o=wwand-ims %d %d IN %s %s', session, version ?? session, fam, addr),
+		's=-',
+		sprintf('c=IN %s %s', fam, addr),
+		't=0 0',
+		sprintf('m=audio %d RTP/AVP %s', port, join(' ', keep)),
+		'b=AS:41',
+	];
+	for (let p in keep) {
+		push(s, sprintf('a=rtpmap:%s %s', p, rtpmap[p]));
+		if (fmtp[p])
+			push(s, sprintf('a=fmtp:%s %s', p, fmtp[p]));
+	}
+	push(s, 'a=ptime:20', 'a=maxptime:240', 'a=sendrecv');
+	if (qos)
+		push(s, ...qos_lines(qos, true));
+	return join('\r\n', s) + '\r\n';
+}
+
+// the far end's RTP address in an SDP: { address, port } or null
+export function sdp_media(sdp)
+{
+	let c = match(sdp ?? '', /(^|\n)c=IN IP[46] ([^\r\n ]+)/);
+	let m = match(sdp ?? '', /(^|\n)m=audio ([0-9]+) /);
+	return (c && m) ? { address: c[2], port: +m[2] } : null;
+}
+
 // o: { ue_addr, port_c, port_s, pcscf: { addr, port_s, port_c }, route: [ ... ],
 //      impu, contact_user, imei_urn, pani, sec_verify, rtp_port, timer, send,
 //      log, t1, user_agent, call_id, from_tag, preconditions, qos_wait, mt_mode }
@@ -226,6 +280,7 @@ export function create(o)
 	let version = session;
 	let next_ver = () => ++version;
 	let on_local_ready = null;     // set below, per role
+	let offer_fn = null;           // MO: builds our offer (dial opts.offer)
 
 	// our segment: the hook (or at once), then on_local_ready()
 	let qos_start = () => {
@@ -377,7 +432,7 @@ export function create(o)
 		if (!p || !p.local || p.told_local || p.update_sent || !p.prack_ok || !p.answered || self.state != 'early')
 			return;
 		p.update_sent = true;
-		send_update(sdp_offer(o.ue_addr, o.rtp_port, session, { local: true, remote: p.remote }, next_ver()), (r) => {
+		send_update(offer_fn({ local: true, remote: p.remote }, next_ver()), (r) => {
 			if (!r || r.status >= 300)
 				return log('warn', sprintf('call: UPDATE %s', r ? r.status : 'timed out'));
 			p.told_local = true;
@@ -449,7 +504,8 @@ export function create(o)
 				self.pre.prack_ok = true;
 				mo_update();
 			}
-			emit(msg.status == 180 ? 'ringing' : 'progress', { status: msg.status, phrase: msg.reason, sdp: length(msg.body ?? '') > 0 });
+			emit(msg.status == 180 ? 'ringing' : 'progress', { status: msg.status, phrase: msg.reason,
+				sdp: length(msg.body ?? '') > 0, body: length(msg.body ?? '') ? msg.body : null });
 			return;
 		}
 
@@ -465,7 +521,7 @@ export function create(o)
 			if (first) {
 				let cancelled = (self.state == 'cancelling');
 				self.state = 'confirmed';
-				emit('answered', { status: msg.status });
+				emit('answered', { status: msg.status, body: self.answer });
 				if (cancelled)    // the answer crossed our CANCEL: end it properly
 					self.hangup();
 			}
@@ -483,7 +539,9 @@ export function create(o)
 
 	// dial(number, cb(event, data)); events: trying, progress, ringing,
 	// answered, ended { reason, status? }
-	self.dial = function(number, cb) {
+	// opts.offer(qos, version): the SDP offer to send (a B2BUA's other leg,
+	// see sdp_relay); default our own AMR-WB/AMR offer
+	self.dial = function(number, cb, opts) {
 		ev = cb ?? ev;
 		if (is_emergency(number))
 			return finish('refused', { detail: 'emergency calls are not supported yet' });
@@ -496,8 +554,8 @@ export function create(o)
 		let branch = 'z9hG4bK' + rnd_hex(8);
 		if (o.preconditions !== false)
 			self.pre = { local: false, remote: false };
-		let body = sdp_offer(o.ue_addr, o.rtp_port, session,
-			self.pre ? { local: false, remote: false } : null, version);
+		offer_fn = opts?.offer ?? ((qos, ver) => sdp_offer(o.ue_addr, o.rtp_port, session, qos, ver));
+		let body = offer_fn(self.pre ? { local: false, remote: false } : null, version);
 		let hs = [ [ 'Via', via(branch) ], [ 'Max-Forwards', '70' ] ];
 		for (let r in default_route)
 			push(hs, [ 'Route', r ]);
@@ -851,7 +909,8 @@ export function create(o)
 			return true;
 		if (m == 'BYE') {
 			reply(msg, 200, 'OK');
-			finish('remote', null);
+			let rs = SIP.all(msg, 'reason');
+			finish('remote', length(rs) ? { cause: join(', ', rs) } : null);
 			return true;
 		}
 		if (m == 'UPDATE' || m == 'INVITE') {
@@ -929,6 +988,19 @@ export function options_ok(buf, o)
 			o.contact_user, hostport(o.ue_addr, o.port_s), o.imei_urn, MMTEL) ],
 		[ 'Allow', ALLOW ], [ 'Accept', 'application/sdp' ], [ 'Supported', '100rel, timer, replaces' ],
 	] }, '');
+}
+
+// 481 for a request that belongs to no call we know (a CANCEL or BYE that
+// comes after the call was forgotten), or null (an ACK, a response, or
+// something else that needs no answer)
+export function no_transaction(buf)
+{
+	let msg = SIP.parse(buf);
+	if (!msg?.method || msg.method == 'ACK')
+		return null;
+	if (msg.method == 'INVITE' && SIP.param(SIP.get(msg, 'to'), 'tag') == null)
+		return null;
+	return SIP.response(msg, 481, 'Call/Transaction Does Not Exist', { to_tag: rnd_hex(6) }, '');
 }
 
 // the parsed message when buf is an initial INVITE (no To tag), else null:

@@ -69,7 +69,7 @@ config rule 'ims_rtp'
 	option name 'IMS-RTP'
 	option src 'ims'
 	option proto 'udp'
-	option dest_port '40000-40001'
+	option dest_port '40000-40199'     # sipd's relay range (ims_modem rtp_base/rtp_span)
 	option target 'ACCEPT'
 
 config rule 'ims_icmp'
