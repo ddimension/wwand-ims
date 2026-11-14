@@ -53,7 +53,8 @@ function v6_dotted(s)
 			break;
 		}
 	if (best) {
-		a = replace(':' + a + ':', best, '::');
+		// the first run only (RFC 5952 4.2.3): two equal runs keep the second
+		a = replace(':' + a + ':', best, '::', 1);
 		a = replace(replace(a, /^:([^:])/, '$1'), /([^:]):$/, '$1');
 	}
 	return a;
@@ -69,6 +70,28 @@ export function pani_of(cells)
 	if (!m || l.tac == null || l.global_cell_id == null)
 		return null;
 	return REG.pani_eutran(+m[1], +m[2], length(m[2]), l.tac, l.global_cell_id, (l.earfcn ?? 0) >= 36000);
+}
+
+// MCCs whose networks use 3-digit MNCs (ITU-T E.212 assignments; the US and
+// Canada, most of the Americas, India 405)
+const MNC3_MCC = [ 302, 310, 311, 312, 313, 314, 315, 316, 334, 338, 342, 344, 346, 348, 354, 356,
+	358, 360, 365, 366, 376, 405, 708, 722, 732 ];
+
+// the MNC length of the card's HOME network, for the IMS domain from the
+// IMSI (TS 23.003 13.2): the serving network's when not roaming and the IMSI
+// begins with it, else by the IMSI's MCC. Config ims_modem.mnc_len wins.
+export function home_mnc_len(m)
+{
+	let p = m?.registration?.plmn;
+	let imsi = m?.imsi ?? '';
+	if (p?.mnc_digits && !m.registration.roaming) {
+		let mnc = sprintf('%d', p.mnc);
+		while (length(mnc) < p.mnc_digits)
+			mnc = '0' + mnc;
+		if (substr(imsi, 0, 3 + p.mnc_digits) == sprintf('%03d', p.mcc) + mnc)
+			return p.mnc_digits;
+	}
+	return (index(MNC3_MCC, +substr(imsi, 0, 3)) >= 0) ? 3 : 2;
 }
 
 // the fields of an AT response line, quotes respected
@@ -100,7 +123,10 @@ export function pcscf_from_cgcontrdp(lines, apn)
 		if (!m)
 			continue;
 		let f = at_fields(m[1]);
-		if (apn && lc(f[2] ?? '') != lc(apn))
+		// the APN as dialled, or with the operator suffix the modem may add
+		// ("ims.mnc002.mcc262.gprs")
+		let a_l = lc(f[2] ?? ''), want = lc(apn ?? '');
+		if (apn && a_l != want && substr(a_l, 0, length(want) + 1) != want + '.')
 			continue;
 		for (let i = 7; i < length(f); i++) {
 			let a = index(f[i], ':') >= 0 ? f[i] : v6_dotted(f[i]);
@@ -152,7 +178,8 @@ export function create(o)
 
 	// ---- what wwand, netifd and the modem know ------------------------------------
 
-	let discover = () => {
+	// light: only what the PDN watch compares (address, P-CSCF), no cell
+	let discover = (light) => {
 		let st = bus.call('wwand', 'status', {});
 		let m = st?.modems?.[o.modem];
 		let ctx = st?.contexts?.[o.iface];
@@ -182,8 +209,8 @@ export function create(o)
 		if (!ue || !p)
 			return { error: sprintf('no UE address or P-CSCF (ipv6 %s, ipv4 %s, P-CSCF %J)', v6 ?? '-', v4 ?? '-', pcscf) };
 
-		let pani = pani_of(bus.call('wwand', 'modem_cells', { modem: o.modem }));
-		if (!pani) {
+		let pani = light ? null : pani_of(bus.call('wwand', 'modem_cells', { modem: o.modem }));
+		if (!pani && !light) {
 			// no QMI cell info (an AT-only or NCM modem): Quectel's own report
 			let q = at('AT+QENG="servingcell"');
 			let mm = match(q?.response?.[0] ?? '',
@@ -192,7 +219,7 @@ export function create(o)
 				pani = REG.pani_eutran(+mm[2], +mm[3], length(mm[3]) == 3 ? 3 : 2, hex(mm[5]), hex(mm[4]), mm[1] == 'TDD');
 		}
 
-		return { imsi: m.imsi, imei: m.imei, mnc_len: o.mnc_len ?? m.registration?.plmn?.mnc_digits ?? 2,
+		return { imsi: m.imsi, imei: m.imei, mnc_len: o.mnc_len ?? home_mnc_len(m),
 		         fam: fam, ue_addr: ue, pcscf: p, pani: pani };
 	};
 
@@ -206,23 +233,36 @@ export function create(o)
 	let open_transport = (env, pair) => {
 		let AF = (env.fam == 6) ? socket.AF_INET6 : socket.AF_INET;
 		let t = { socks: {}, tcp: null, handles: [], tcp_by_callid: {}, conns: [] };
+		// a failure closes what was opened so far: a socket left bound would
+		// make every retry fail on its port
+		let fail = (s, msg) => {
+			let e = { error: sprintf('%s: %s', msg, socket.error()) };
+			s?.close();
+			for (let k, x in t.socks)
+				x.close();
+			return e;
+		};
 		for (let port in pair) {
 			let s = socket.create(AF, socket.SOCK_DGRAM);
+			if (!s)
+				return fail(null, 'socket');
 			if (o.vrf && !s.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, o.vrf))
-				return { error: sprintf('bind to VRF %s: %s', o.vrf, socket.error()) };
+				return fail(s, sprintf('bind to VRF %s', o.vrf));
 			s.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
 			if (!s.bind({ address: env.ue_addr, port: port }))
-				return { error: sprintf('bind %s port %d: %s', env.ue_addr, port, socket.error()) };
+				return fail(s, sprintf('bind %s port %d', env.ue_addr, port));
 			t.socks[sprintf('%d', port)] = s;
 		}
 		let l = socket.create(AF, socket.SOCK_STREAM);
-		if (o.vrf)
+		if (l && o.vrf)
 			l.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, o.vrf);
-		l.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
-		if (l.bind({ address: env.ue_addr, port: pair[1] }) && l.listen(4))
+		l?.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
+		if (l && l.bind({ address: env.ue_addr, port: pair[1] }) && l.listen(4))
 			t.tcp = l;
-		else
+		else {
 			log('warn', sprintf('ue: no SIP over TCP on port %d: %s', pair[1], socket.error()));
+			l?.close();
+		}
 		return t;
 	};
 
@@ -426,16 +466,21 @@ export function create(o)
 
 	impu = () => filter(cur?.res?.associated ?? [], (u) => match(u, /^sip:/))[0] ?? cur?.reg?.ids?.impu;
 
+	// the refresh when it is due; while a call runs it is retried every 30 s
+	// (not rescheduled from the expiry: that would push it past it)
+	let refresh_due;
+	refresh_due = () => {
+		if (busy()) {
+			log('info', 'ue: refresh due, a call is running; again in 30 s');
+			return set_timer('reg', 30000, refresh_due);
+		}
+		register();
+	};
+
 	schedule_refresh = () => {
 		let exp = cur?.res?.expires ?? 3600;
 		let at_s = (exp > 1200) ? exp - 600 : int(exp / 2);
-		set_timer('reg', at_s * 1000, () => {
-			if (busy()) {
-				log('info', 'ue: refresh due, a call is running; again in 30 s');
-				return set_timer('reg', 30000, () => schedule_refresh());
-			}
-			register();
-		});
+		set_timer('reg', at_s * 1000, refresh_due);
 	};
 
 	// a new address or P-CSCF on the PDN (re-attach), or the PDN gone: start over
@@ -444,7 +489,7 @@ export function create(o)
 		set_timer('watch', 20000, watch);
 		if (!cur || self.state != 'registered' || busy())
 			return;
-		let env = discover();
+		let env = discover(true);
 		if (env.error || env.ue_addr != cur.env.ue_addr || env.pcscf != cur.env.pcscf) {
 			log('warn', sprintf('ue: the IMS PDN changed (%s); registering again',
 				env.error ?? sprintf('%s via %s', env.ue_addr, env.pcscf)));

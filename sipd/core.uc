@@ -20,7 +20,7 @@
 // The other backend, the router's own IMS UE (sipd/line_ue.uc), comes as
 //   env.line   { ready(), ue_addr(), dial(number, ev, { offer, ims_port }) -> call }
 //              plus core.on_line_incoming(inc) for the calls it receives
-//   env.relay  { alloc() -> media, connect(media, far), stop(media) } (sipd/relay.uc)
+//   env.relay  { alloc() -> media, connect(media, far), update(media, far), stop(media) } (sipd/relay.uc)
 //   env.sdp    { relay: ue/call.uc sdp_relay, media: sdp_media } (an ES module,
 //              so the entry imports it and hands it in)
 // With it the SDP is relayed: the AMR-WB/AMR and telephone-event lines go
@@ -182,20 +182,30 @@ function create(env)
 	// ---- the UE line: SDP and media ---------------------------------------------------
 
 	// the AMR(-WB) payload type and clock in an SDP, for the relay's keepalive
+	// the AMR(-WB) payload type, clock and framing of the first AMR in an SDP
 	let amr_of = (sdp) => {
 		let m = match(sdp ?? '', /a=rtpmap:([0-9]+) (AMR-WB|AMR)\//i);
-		return m ? { pt: +m[1], rate: lc(m[2]) == 'amr-wb' ? 16000 : 8000 } : null;
+		if (!m)
+			return null;
+		let f = match(sdp, regexp('a=fmtp:' + m[1] + ' ([^\r\n]*)'));
+		return { pt: +m[1], rate: lc(m[2]) == 'amr-wb' ? 16000 : 8000,
+		         octet: f != null && match(f[1], /octet-align *= *1/) != null };
 	};
 
 	// lan_sdp: what the phone sent (offer or answer); ims_sdp: what the far
 	// end on the IMS side sent (its answer or its offer)
-	let line_connect = (c, lan_sdp, ims_sdp) => {
+	// connected once; a later SDP (the 200 after a 183 with early media, from
+	// another media gateway) moves the far ends
+	// pt_sdp: where the negotiated AMR comes from, when not ims_sdp (MT: our
+	// answer to the network, not its offer with every codec)
+	let line_connect = (c, lan_sdp, ims_sdp, pt_sdp) => {
+		let a = amr_of(pt_sdp ?? ims_sdp);
+		let far = { lan: U.sdp_media(lan_sdp), ims: U.sdp_media(ims_sdp), ims_pt: a?.pt, ims_rate: a?.rate,
+		            ims_octet: a?.octet };
 		if (c.connected)
-			return;
+			return env.relay.update(c.media, far);
 		c.connected = true;
-		let a = amr_of(ims_sdp);
-		env.relay.connect(c.media, { lan: U.sdp_media(lan_sdp), ims: U.sdp_media(ims_sdp),
-		                             ims_pt: a?.pt, ims_rate: a?.rate });
+		env.relay.connect(c.media, far);
 	};
 
 	let lan_sdp_for = (c, ims_sdp) => U.sdp_relay(ims_sdp, cfg.ip, c.media.lan_port, c.session, null, ++c.sdp_ver);
@@ -364,8 +374,12 @@ function create(env)
 
 		log('info', sprintf('sipd: incoming call from %s to %s over the IMS UE', caller, user));
 		retransmit(c, c.invite, c.addr, () => {
-			hangup_modem(c);
 			end_call(c, 'phone did not answer the INVITE');
+			// "not reachable", not the 603 Decline a hangup would send
+			if (lc.state == 'incoming')
+				lc.reject(480, 'Temporarily Unavailable');
+			else
+				lc.hangup();
 		});
 	};
 
@@ -383,7 +397,7 @@ function create(env)
 			return end_call(c, 'no AMR in the phone\'s answer');
 		}
 		c.state = 'up';
-		line_connect(c, res.body, c.lc.offer);
+		line_connect(c, res.body, c.lc.offer, c.lc.answer);
 		if (!c.lc.accept())
 			c.want_accept = true;    // preconditions still running: on 'incoming'
 	};
@@ -575,8 +589,9 @@ function create(env)
 		if (c.state != 'up') {
 			c.last = S.response(c.req, 487, 'Request Terminated', { to_tag: c.local_tag });
 			send(c.last, c.addr);
-			hangup_modem(c);
+			// the call first: the line's 'ended' must not send a second final
 			end_call(c, 'cancelled by the phone');
+			hangup_modem(c);
 		}
 	};
 
@@ -587,8 +602,8 @@ function create(env)
 		let c = call;
 
 		send(S.response(req, 200, 'OK'), source(from));
-		hangup_modem(c);
 		end_call(c, 'phone hung up');
+		hangup_modem(c);
 	};
 
 	let on_ack = (req) => {

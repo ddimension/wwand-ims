@@ -37,7 +37,11 @@ eq(T.ims_profile([ { index: 3, apn: 'sos', imcn: true }, { index: 5, apn: 'ims.i
 	'ims_profile: the IMCN-marked one (modem_profiles), sos skipped');
 eq(T.ims_profile([ { index: 1, apn: 'internet' } ]), null, 'ims_profile: none');
 eq([ T.pdp_option('IPV4V6'), T.pdp_option('IPV6'), T.pdp_option('IP'), T.pdp_option('x') ],
-	[ 'ipv4v6', 'ipv6', 'ipv4', null ], 'pdp_option');
+	[ 'ipv4v6', 'ipv6', 'ipv4', null ], 'pdp_option: AT+CGDCONT text');
+eq([ T.pdp_option(0), T.pdp_option(2), T.pdp_option(3), T.pdp_option(1) ], [ 'ipv4', 'ipv6', 'ipv4v6', null ],
+	'pdp_option: the QMI enum of modem_profiles (libqmi QmiWdsPdpType)');
+eq(T.setup_sections({ modem: 'm', profile: { index: 2, apn: 'ims', pdp_type: 2 } })[2].opts.pdp_type, 'ipv6',
+	'setup: the PDP type from a QMI profile');
 
 // ---- setup plan -----------------------------------------------------------------------
 
@@ -74,5 +78,15 @@ eq(LINE.pcscf_from_cgcontrdp([
 	'+CGCONTRDP: 1,5,"web.vodafone.de","10.1.2.3.255.0.0.0","10.1.2.1"',
 	'+CGCONTRDP: 2,6,"ims","42.0.0.32.65.210.152.230.167.42.186.175.21.191.136.10", "254.128.0.0.0.0.0.0.0.0.0.0.0.0.0.1",,,"42.1.8.240.4.0.9.84.0.0.0.0.0.0.0.5","42.1.8.240.4.0.5.36.0.0.0.0.0.0.0.5"',
 ], 'ims'), [ '2a01:8f0:400:954::5', '2a01:8f0:400:524::5' ], 'pcscf_from_cgcontrdp: the IMS PDN\'s P-CSCFs as IPv6 text');
+
+// home MNC length and the IPv6 shortening
+eq(LINE.home_mnc_len({ imsi: '262021234567890', registration: { roaming: false, plmn: { mcc: 262, mnc: 2, mnc_digits: 2 } } }), 2,
+	'home_mnc_len: home network, 2 digits');
+eq(LINE.home_mnc_len({ imsi: '310410123456789', registration: { roaming: true, plmn: { mcc: 262, mnc: 2, mnc_digits: 2 } } }), 3,
+	'home_mnc_len: roaming US card -> 3 by its MCC, not the visited network\'s 2');
+eq(LINE.pcscf_from_cgcontrdp([ '+CGCONTRDP: 2,6,"ims","x","y",,,"32.1.13.184.0.0.0.0.0.1.0.0.0.0.0.1"' ], 'ims'),
+	[ '2001:db8::1:0:0:1' ], 'v6_dotted: two equal zero runs, only the first shortened');
+eq(LINE.pcscf_from_cgcontrdp([ '+CGCONTRDP: 2,6,"ims.mnc002.mcc262.gprs","x","y",,,"42.1.8.240.4.0.9.84.0.0.0.0.0.0.0.5"' ], 'ims'),
+	[ '2a01:8f0:400:954::5' ], 'pcscf_from_cgcontrdp: the APN with an operator suffix');
 
 done();

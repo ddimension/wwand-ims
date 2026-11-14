@@ -160,7 +160,11 @@ if (backend == 'ue') {
 		ims_ip: () => line?.ue_addr(), vrf: im.vrf, log: log,
 		base: +(im.rtp_base ?? 40000), span: +(im.rtp_span ?? 200) });
 	line = LINE.create({ bus: bus, uloop: uloop, socket: socket, xfrm: xfrm,
-		modem: modem, iface: im.ims_iface ?? 'wwims', vrf: im.vrf, apn: im.ims_apn,
+		modem: modem, iface: im.ims_iface ?? 'wwims', vrf: im.vrf,
+		// the APN to find the IMS PDN's line in AT+CGCONTRDP: config, else the
+		// interface's own option apn
+		apn: im.ims_apn ?? cur.get('network', im.ims_iface ?? 'wwims', 'apn'),
+		mnc_len: im.mnc_len ? +im.mnc_len : null,
 		pcscf: im.pcscf, relay: relay, log: log,
 		on_incoming: (inc) => core?.on_line_incoming(inc) });
 }

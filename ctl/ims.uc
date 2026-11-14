@@ -95,9 +95,13 @@ function ims_profile(profiles)
 	return null;
 }
 
-// a modem profile's PDP type as the interface option
+// a modem profile's PDP type as the interface option: AT+CGDCONT's text, or
+// modem_profiles' QMI enum (libqmi 1.38 QmiWdsPdpType: 0 IPv4, 1 PPP,
+// 2 IPv6, 3 IPv4 or IPv6)
 function pdp_option(t)
 {
+	if (type(t) == 'int')
+		return { '0': 'ipv4', '2': 'ipv6', '3': 'ipv4v6' }[sprintf('%d', t)];
 	t = lc(replace(t ?? '', /[^A-Za-z0-9]/g, ''));
 	if (t == 'ipv4v6')
 		return 'ipv4v6';
@@ -112,6 +116,7 @@ function pdp_option(t)
 function setup_sections(o)
 {
 	let ifc = o.iface ?? 'wwims', vrf = o.vrf ?? 'ims', table = sprintf('%d', o.table ?? 30);
+	let rtp = o.rtp ?? RTP_PORTS;
 	let p = o.profile;
 	let net = { proto: 'wwand', modem: o.modem, device: ifc, mux_id: 'auto', apn: p.apn,
 	            ims: '1', ip4table: table, ip6table: table, peerdns: '0', delegate: '0' };
@@ -134,7 +139,7 @@ function setup_sections(o)
 		{ config: 'firewall', name: vrf + '_sip', type: 'rule',
 		  opts: { name: 'IMS-SIP', src: vrf, proto: 'tcp udp', dest_port: SIP_PORTS, target: 'ACCEPT' } },
 		{ config: 'firewall', name: vrf + '_rtp', type: 'rule',
-		  opts: { name: 'IMS-RTP', src: vrf, proto: 'udp', dest_port: RTP_PORTS, target: 'ACCEPT' } },
+		  opts: { name: 'IMS-RTP', src: vrf, proto: 'udp', dest_port: rtp, target: 'ACCEPT' } },
 		{ config: 'firewall', name: vrf + '_icmp', type: 'rule',
 		  opts: { name: 'IMS-ICMP', src: vrf, proto: 'icmp ipv6-icmp', target: 'ACCEPT' } },
 		{ config: 'wwand_ims', name: 'ue', type: 'ims_modem',
@@ -260,15 +265,20 @@ function cmd_check(ctx, modem, st, m)
 	printf('  %-30s %s\n', 'carrier config (MBN)', s.mbn ? sprintf('%s%s', s.mbn.name ?? s.mbn.id,
 		s.mbn.pending ? ' (a switch is pending: reset)' : '') : 'unknown');
 	line(sprintf('IMS profile (%s)', s.profiles.via), s.ims ?
-		sprintf('%d "%s" %s%s', s.ims.index, s.ims.apn, s.ims.pdp_type ?? '?', s.ims.imcn ? ', IMCN' : '') : 'none found',
+		sprintf('%d "%s" %s%s', s.ims.index, s.ims.apn, pdp_option(s.ims.pdp_type) ?? sprintf('%J', s.ims.pdp_type),
+			s.ims.imcn ? ', IMCN' : '') : 'none found',
 		s.ims != null, 'the carrier config has no IMS profile');
 
+	// the IMS PDN: a proto wwand interface with option ims '1' on this modem
 	let found = null;
-	for (let n, c in st.contexts ?? {})
-		if (c.config?.ims === true || c.ims === true || n == 'wwims')
-			found = [ n, c ];
-	line('IMS PDN interface', found ? sprintf('%s %s', found[0], found[1].state ?? '?') : 'none',
-		found != null, 'wwand-ims-setup');
+	try {
+		require('uci').cursor().foreach('network', 'interface', (x) => {
+			if (!found && x.proto == 'wwand' && x.ims == '1' && (x.modem == null || x.modem == modem))
+				found = [ x['.name'], st.contexts?.[x['.name']] ];
+		});
+	} catch (e) { found = null; }
+	line('IMS PDN interface', found ? sprintf('%s %s', found[0], found[1]?.state ?? 'not in wwand') : 'none',
+		found != null && found[1]?.state == 'CONNECTED', found ? 'is it up? (ifup ' + found[0] + ')' : 'wwand-ims-setup');
 
 	printf('\n%s\n', bad ? sprintf('%d item(s) to fix', bad) : 'ready for the IMS UE');
 	exit(bad ? 2 : 0);
@@ -323,17 +333,25 @@ function cmd_setup(ctx, modem, m, opts)
 {
 	let uci = require('uci');
 	// --confdir: work on a copy of /etc/config (a test of --apply)
+	let dir = opts.confdir ?? '/etc/config';
+	// uci cannot set into a config file that does not exist
+	if (opts.apply && !fs.stat(dir + '/wwand_ims'))
+		fs.writefile(dir + '/wwand_ims', '');
 	let cur = opts.confdir ? uci.cursor(opts.confdir) : uci.cursor();
 	let s = state(ctx, modem, m);
+	// the relay range the firewall must open: sipd's rtp_base / rtp_span
+	let rb = 40000, rs = 200;
+	cur.foreach('wwand_ims', 'ims_modem', (x) => { rb = +(x.rtp_base ?? rb); rs = +(x.rtp_span ?? rs); });
 
 	if (!s.ims)
 		die(sprintf('no IMS profile in the modem\'s carrier config (profiles via %s: %J)', s.profiles.via,
 			map(s.profiles.list, (p) => sprintf('%d %s', p.index, p.apn))));
 
 	printf('carrier config %s: IMS profile %d, APN "%s", %s (via %s)\n', s.mbn?.name ?? s.mbn?.id ?? '?',
-		s.ims.index, s.ims.apn, s.ims.pdp_type ?? '?', s.profiles.via);
+		s.ims.index, s.ims.apn, pdp_option(s.ims.pdp_type) ?? sprintf('%J', s.ims.pdp_type), s.profiles.via);
 
-	let want = setup_sections({ modem: modem, profile: s.ims, iface: opts.iface, table: opts.table });
+	let want = setup_sections({ modem: modem, profile: s.ims, iface: opts.iface, table: opts.table,
+	                            rtp: sprintf('%d-%d', rb, rb + rs - 1) });
 	let todo = [];
 	for (let w in want) {
 		// sipd reads the first ims_modem section, whatever its name: that one
@@ -358,17 +376,29 @@ function cmd_setup(ctx, modem, m, opts)
 		return;
 	}
 
+	let failed = [];
 	for (let w in todo) {
-		cur.set(w.config, w.name, w.type);
+		let have = cur.get_all(w.config, w.name);
+		if (!have && !cur.set(w.config, w.name, w.type))
+			push(failed, sprintf('%s.%s', w.config, w.name));
 		for (let k, v in w.opts)
-			cur.set(w.config, w.name, k, v);
-		for (let k, v in w.lists ?? {})
-			cur.set(w.config, w.name, k, v);
+			if (!cur.set(w.config, w.name, k, v))
+				push(failed, sprintf('%s.%s.%s', w.config, w.name, k));
+		// lists: what is there stays, the missing entries are added
+		for (let k, v in w.lists ?? {}) {
+			let h = have?.[k];
+			h = (type(h) == 'array') ? h : (h != null ? split(h, ' ') : []);
+			if (!cur.set(w.config, w.name, k, uniq([ ...h, ...v ])))
+				push(failed, sprintf('%s.%s.%s', w.config, w.name, k));
+		}
 	}
+	if (length(failed))
+		die(sprintf('uci refused %s (nothing committed)', join(', ', failed)));
 	if (!length(todo) && hook)
 		return printf('\nnothing to write\n');
 	for (let c in uniq(map(todo, (w) => w.config)))
-		cur.commit(c);
+		if (!cur.commit(c))
+			die(sprintf('uci commit %s failed', c));
 	if (!hook) {
 		fs.writefile(L3MDEV_HOTPLUG, L3MDEV_SCRIPT);
 		system(sprintf('chmod 755 %s', L3MDEV_HOTPLUG));

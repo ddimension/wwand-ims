@@ -449,4 +449,30 @@ eq(CALL.no_transaction(replace(replace(net_invite(null), 'INVITE sip', 'ACK sip'
 	'no_transaction: an ACK gets nothing');
 eq(CALL.no_transaction(net_invite(null)), null, 'no_transaction: an initial INVITE is not for it');
 
+// hangup before any provisional: CANCEL waits for the first one
+s = setup();
+s.call.dial('+4915550123456', s.ev);
+let n_h = length(s.out);
+s.call.hangup();
+eq([ length(s.out), s.call.state ], [ n_h, 'calling' ], 'hangup before any provisional: no CANCEL yet, no local end');
+s.call.on_message(resp(s.out[0].msg, 100, 'Trying'));
+eq(s.last().msg.method, 'CANCEL', 'hangup before any provisional: the CANCEL goes with the 100');
+s.call.on_message(resp(s.out[0].msg, 487, 'Request Terminated'));
+eq(s.call.ended, 'cancelled', 'hangup before any provisional: ended by the 487');
+
+// MT with preconditions: no 200 before the 180
+qready = null;
+s = setup();
+s.call = CALL.create({
+	ue_addr: UE, port_c: 5062, port_s: 5064, pcscf: { addr: PC, port_s: 6000, port_c: 32838 }, route: [],
+	impu: IMPU, contact_user: '262021234567890', imei_urn: 'urn:gsma:imei:86896506-000860-0',
+	sec_verify: 'x', rtp_port: 40000, timer: s.clk.timer, call_id: 'x', from_tag: 'ft1',
+	qos_wait: (cb) => { qready = cb; },
+	send: (buf, dst, port, src) => push(s.out, { msg: SIP.parse(buf), buf: buf, dst: dst, port: port, src: src }),
+});
+s.call.incoming(CALL.initial_invite(qinv), s.ev);
+eq(s.call.accept(), false, 'MT preconditions: accept before the 180 is refused (RFC 3262 3)');
+ok(filter(s.out, (x) => x.msg.status == 200).length == null && length(filter(s.out, (x) => x.msg.status == 200)) == 0,
+	'MT preconditions: no 200 went out');
+
 done();

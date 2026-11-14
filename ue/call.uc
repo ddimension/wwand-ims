@@ -475,12 +475,19 @@ export function create(o)
 				t.timeout = null;
 			}
 			if (msg.status == 100) {
+				self.got_1xx = true;
 				emit('trying');
+				// a hangup before any provisional: the CANCEL may go now (RFC 3261 9.1)
+				if (self.cancel_pending)
+					self.cancel();
 				return;
 			}
 			learn_dialog(msg);
+			self.got_1xx = true;
 			if (self.state == 'calling')
 				self.state = 'early';
+			if (self.cancel_pending)
+				return self.cancel();
 			if (length(msg.body ?? '')) {
 				self.answer = msg.body;
 				if (self.pre) {
@@ -585,8 +592,9 @@ export function create(o)
 
 	// CANCEL before the answer (only after a provisional, RFC 3261 9.1)
 	self.cancel = function() {
-		if (self.state != 'early')
+		if (self.state != 'early' && !(self.state == 'calling' && self.got_1xx))
 			return false;
+		self.cancel_pending = false;
 		self.state = 'cancelling';
 		let hs = [ [ 'Via', via(self.invite.branch) ], [ 'Max-Forwards', '70' ] ];
 		for (let r in default_route)
@@ -608,8 +616,14 @@ export function create(o)
 	self.hangup = function(cb) {
 		if (cb)
 			ev = ((prev) => (n, d) => { prev(n, d); if (n == 'ended') cb(d); })(ev);
-		if (self.state == 'early')
+		if (self.state == 'early' || (self.state == 'calling' && self.got_1xx))
 			return self.cancel();
+		// before any provisional a CANCEL may not go yet (RFC 3261 9.1): it
+		// goes with the first one; the call ends with the 487 then
+		if (self.state == 'calling') {
+			self.cancel_pending = true;
+			return true;
+		}
 		if (self.state == 'incoming')
 			return self.reject(603, 'Decline');
 		if (self.state == 'answering') {
@@ -816,8 +830,13 @@ export function create(o)
 		emit('incoming', { from: self.uas.peer, offer: length(msg.body ?? '') > 0 });
 	};
 
+	// false while preconditions still run (before our 180): a 200 then would
+	// come before the 183's PRACK (RFC 3262 3) and before our QoS is up; the
+	// caller accepts again on the 'incoming' event
 	self.accept = function() {
 		if (self.role != 'uas' || self.state != 'incoming')
+			return false;
+		if (self.pre && !self.pre.rung)
 			return false;
 		self.state = 'answering';
 		let hs = [ [ 'Contact', contact ], [ 'Allow', ALLOW ], [ 'Supported', '100rel, precondition, timer, replaces' ] ];

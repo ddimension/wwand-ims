@@ -14,6 +14,7 @@
 //   let r = RELAY.create({ socket, uloop, lan_ip, ims_ip (or a function), vrf, log, base, span })
 //   let m = r.alloc()           -> { id, lan_port, ims_port } or null
 //   r.connect(m, { lan: { address, port }, ims: { address, port }, ims_pt })
+//   r.update(m, far)            a later SDP's far ends
 //   r.stop(m)
 
 'use strict';
@@ -128,7 +129,10 @@ export function create(o)
 					(ts >> 24) & 255, (ts >> 16) & 255, (ts >> 8) & 255, ts & 255) + ssrc;
 				seq = (seq + 1) & 0xffff;
 				ts = (ts + step) & 0xffffffff;
-				if (m.peer.ims && m.ims.rtp.send(hdr + chr(0xf7, 0xc0), 0, m.peer.ims))
+				// bandwidth-efficient: CMR 15, F=0 FT=15 Q=1 in 10 bits; octet-aligned
+				// (fmtp octet-align=1): a CMR byte, then a TOC byte (RFC 4867 4.4)
+				let frame = far.ims_octet ? chr(0xf0, 0x7c) : chr(0xf7, 0xc0);
+				if (m.peer.ims && m.ims.rtp.send(hdr + frame, 0, m.peer.ims))
 					m.n.ka++;
 				m.ka = uloop.timer(20, tick);
 			};
@@ -136,6 +140,19 @@ export function create(o)
 		}
 		log('info', sprintf('relay %d: LAN %s:%d <-> IMS %s:%d', m.id,
 			far.lan?.address ?? '?', far.lan?.port ?? 0, far.ims?.address ?? '?', far.ims?.port ?? 0));
+	};
+
+	// a later SDP names other far ends: send there from now on (what arrives
+	// from a side still overrides it, symmetric RTP)
+	self.update = function(m, far) {
+		if (!m || m.stopped)
+			return;
+		for (let side in [ 'lan', 'ims' ])
+			if (far[side] && (far[side].address != m.peer[side]?.address || far[side].port != m.peer[side]?.port)) {
+				m.peer[side] = far[side];
+				m.peer[side + '_rtcp'] = { address: far[side].address, port: far[side].port + 1 };
+				log('info', sprintf('relay %d: %s far end now %s:%d', m.id, side, far[side].address, far[side].port));
+			}
 	};
 
 	self.stop = function(m) {

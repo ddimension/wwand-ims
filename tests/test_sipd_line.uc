@@ -49,6 +49,7 @@ let env = {
 		alloc: () => { let m = { id: length(relays) + 1, lan_port: 40000, ims_port: 40100, did: [] }; push(relays, m); return m; },
 		connect: (m, far) => push(m.did, sprintf('connect lan %s:%d ims %s:%d pt %d', far.lan?.address, far.lan?.port,
 			far.ims?.address, far.ims?.port, far.ims_pt)),
+		update: (m, far) => push(m.did, sprintf('update ims %s:%d', far.ims?.address, far.ims?.port)),
 		stop: (m) => push(m.did, 'stop'),
 	},
 	sdp: { relay: CALL.sdp_relay, media: CALL.sdp_media },
@@ -154,6 +155,9 @@ eq([ last().status, S.get(last(), 'warning') ], [ 503, '399 x "ASR"' ], 'out: th
 dial_out(PBX_OFFER, 'out4@pbx');
 dials[3].ev('progress', { status: 183, body: IMS_ANSWER });
 ok(last().status == 183 && index(last().body, 'm=audio 40000') >= 0, 'out: IMS 183 with SDP -> 183 with SDP (early media)');
+// ... and the 200 from another media gateway moves the relay's IMS far end
+dials[3].ev('answered', { status: 200, body: replace(IMS_ANSWER, /954::12/g, '954::99') });
+eq(relays[length(relays) - 1].did[1], 'update ims 2a01:8f0:400:954::99:21870', 'out: a 200 after early media updates the relay');
 dials[3].ev('ended', { status: 487, reason: 'cancelled' });
 
 // an offer without AMR: refused before the line is asked
