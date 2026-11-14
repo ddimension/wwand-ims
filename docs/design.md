@@ -1,44 +1,86 @@
 # wwand-ims — design
 
-_Draft of 2026-11-13. Nothing here is implemented yet._
+_Draft of 2026-11-13, direction changed 2026-11-14 (section 1)._
 
 ## 1. Who speaks IMS
 
-**The modem does.** Qualcomm modem firmware carries a complete IMS client
-(SIP, IMS-AKA, IPsec sec-agree, AMR/AMR-WB, preconditions, SRVCC). What
-it lacks for an IoT operator is that operator's settings. The Vodafone
-IoT Voice guide (v1.1, April 2023, §3.8) says so: the settings come in a
-carrier MBN, consumer and most IoT modules do not carry the Vodafone
-90128 one, and the generic defaults "almost never" work.
+**Since 2026-11-14: the router does, with its own IMS UE.** The modem
+is asked only for what the host cannot do itself: the attach, an IMS PDN
+on a host mux, the USIM over the raw APDU channel, and the cell for
+`P-Access-Network-Info`. Its own IMS stack is switched off.
 
-A host-side IMS client was considered and rejected. It would need IMS-AKA
-through the SIM, IPsec through kernel xfrm and AMR-WB transcoding, and the
-modem's own IMS would have to be switched off. Emergency calls would then
-be ours to get right. All of that is what the modem already does and the
-operator has already tested.
+The first draft had rejected a host-side client: the modem already carries
+a complete IMS stack, tested by the operator. The measurements of
+2026-11-13/14 turned that around:
 
-So wwand-ims does two things:
+- **Firmware gates:** the RG650E on A05 computes IMS voice off in its own
+  settings engine although every host input is right; the registration
+  carries no MMTEL feature tag (research/rg650e-245/NOTES.md, F3 trace).
+- **No audio path:** the 5G modules have no working host PCM (section
+  5.3). With the router as the UE the voice is RTP over the IMS PDN, and
+  UAC, QPCMV and the PCM pins drop out of the picture.
+- **The MBN problem disappears:** the operator settings are a profile on
+  the router, not an MBN on the modem. A data-only module becomes
+  voice-capable if the network grants the IMS APN and AKA works through
+  the card.
 
-1. **Brings the operator settings into the modem**, from a profile
-   (section 3). That is the "missing MBN" problem.
-2. **Bridges a LAN SIP phone** to the modem's call control (QMI Voice) and
-   audio (PCM over USB, or over the module's PCM pins — see section 5.3).
+The dedicated QCI 1 bearer is set up by the network (P-CSCF → PCRF), but
+the eNB sets it up only for a UE that reports VoLTE support. The RG650E
+ships with LTE FGI 3 and 7 (RLC UM) off. That is a "no VoLTE" UE, and every
+call ended in `503 … ASR: BEARER_RELEASED`, on every SIM (section 5.4). With
+`AT+QNWCFG="lte_fgi_fdd"` plus 3 and 7 the bearer comes up and calls work
+both ways (research/rg650e-245/NOTES.md, 2026-11-14). A host UE needs this
+override on such a module just as the modem's own IMS would.
+
+Decisions (2026-11-14):
+
+| Topic | Decision |
+|---|---|
+| Operator settings | profiles in `/etc/config/wwand_ims`; the modem's carrier MBN is a **source** for them, read by an import tool (MBN -> profile), with an override layer on top (GDSP). At run time only the profile counts |
+| Media | the codecs are passed through 1:1, no transcoding: the relay only moves RTP/RTCP between the LAN phone and the IMS PDN address. The LAN phone must speak what the network speaks (AMR-WB/AMR, RFC 4867) |
+| IPsec (sec-agree) | kernel ESP in transport mode, SAs and policies over **NETLINK_XFRM** from a small native module (`src/xfrm`), no `ip xfrm` CLI, no IKE daemon |
+| Isolation | the IMS PDN in a VRF of its own (or its own routing table with rules): the UE's sockets, the relay and the xfrm selectors live there, nothing of the LAN or the data PDN reaches it |
+| Emergency calls | not yet. sipd recognises the emergency numbers and refuses them audibly instead of letting them die silently |
+| VoWiFi (ePDG, IKEv2 + EAP-AKA through the card) | phase 2, with a strongSwan plugin; the OpenWrt strongSwan package builds no eap-aka at all, which is a task of its own |
+
+The QMI call-control plugin (`plugins/ims.uc`) stays: for a modem whose
+own IMS works (EG25-G) it is the cheaper path, and sipd can sit on either
+backend.
 
 ## 2. Components
 
 | Component | Runs | Talks to |
 |---|---|---|
-| `plugins/ims.uc` | in the wwand daemon (wwand plugin API, `plugins.uc`) | QMI VOICE/IMSA/IMS/WDS/NAS/PDC on the modem; `status` row; ubus ops `dial`, `answer`, `hangup`, `dtmf`, `apply_profile`; events `call`, `ims` |
-| `sipd.uc` | own procd service | LAN phones (SIP/UDP+TCP); the plugin over ubus |
-| `mediad` (C) | own procd service, started per call | RTP to the phone; PCM from and to the modem (UAC via ALSA, or the QPCMV tty) |
-| `mcfg` (C) | CLI, called by the plugin | MBN files: unpack, patch items, pack, hash |
+| `ue/aka.uc` | in the UE | the USIM over `wwand modem_apdu` (own logical channel); AUTHENTICATE, AUTS; Digest AKAv1-MD5 nonce; IMPI/IMPU from the IMSI |
+| `ue/secagree.uc` | in the UE | Security-Client/-Server/-Verify, ESP keys from CK/IK, the four SAs of TS 33.203 7.1 |
+| `src/xfrm` (C, ucode module `wwand_ims_xfrm`) | in the UE | NETLINK_XFRM: reserve SPIs, add/update/delete SAs and policies |
+| UE (planned) | own procd service, in the IMS VRF | P-CSCF over UDP/TCP: REGISTER, reg-event, INVITE with preconditions, PRACK, UPDATE |
+| `sipd/` | own procd service | LAN phones (SIP/UDP+TCP); B2BUA to the UE or to the QMI plugin |
+| RTP relay (planned) | per call | LAN phone <-> IMS PDN address and the ports in our SDP (the QCI 1 TFT matches them) |
+| `plugins/ims.uc` | in the wwand daemon | QMI IMSA/IMS/NAS/Voice: the modem-IMS backend, and IMS off for the host UE |
+| `mcfg` (C) | CLI | MBN files: unpack, read the IMS items for the import |
 | `tools/efs-dump.sh` | CLI | modem EFS items, read-only |
 
-What the wwand core may need (neutral, no voice code):
-- a plugin hook that hands out a QMI client for a given service on a modem
-  (check what `deps` already offers);
-- a guarantee that the attach-profile code never touches the IMS profile
-  (profile 2 on the RG650E), backed by a test.
+What the wwand core needs (neutral, no voice code):
+- the P-CSCF addresses of a PDN (PCO, WDS runtime settings) in the
+  interface status, so the UE finds its P-CSCF;
+- a guarantee that the attach-profile code never touches the IMS profile,
+  backed by a test.
+
+## 2a. Phases
+
+| Phase | Content | State |
+|---|---|---|
+| 1 spike | IMS PDN on a host mux in the IMS VRF, P-CSCF, AKA over APDU, sec-agree over netlink, REGISTER -> 200 OK | AKA and sec-agree written and host-tested (incl. a real kernel in a netns), 2026-11-14 |
+| 1 calls | MO/MT, PRACK, preconditions towards the network, plain SDP towards the phone | |
+| 1 media | RTP/RTCP relay, codecs passed through | |
+| 1 robustness | PDN loss, re-auth with new SAs (TS 33.203 7.4), network de-registration, modem reset | |
+| 2 | VoWiFi: strongSwan with an EAP-AKA card plugin over the same APDU path, the tunnel as an XFRM interface in the IMS VRF | |
+
+Blocker on the hardware: the test kernels (Chateau 6.18.55, NR7101 6.18.60)
+have no `xfrm_user`/`esp4`/`esp6`, and the snapshot feeds carry no
+matching kmods. The spike device needs an image (or kmods from the same
+kernel build) with IPsec; build project: `/vol/release/wwand-ims`.
 
 ## 3. Profiles: where each GDSP setting goes
 

@@ -1,0 +1,13 @@
+#!/bin/sh
+# /etc/hotplug.d/iface/25-wwand-ims-l3mdev
+# The kernel installs the l3mdev FIB rules (pref 1000, v4 and v6) only once
+# per network namespace, when the first VRF appears. netifd flushes the
+# policy rules on every restart, and nothing brings them back: sockets bound
+# to the IMS VRF then route only through netifd's `from <addr>` rules
+# (wwand docs/vrf.md). Re-add them on any ifup while a VRF exists.
+[ "$ACTION" = ifup ] || exit 0
+ip link show type vrf 2>/dev/null | grep -q . || exit 0
+for f in -4 -6; do
+	ip $f rule show pref 1000 | grep -q l3mdev ||
+		ip $f rule add pref 1000 l3mdev protocol kernel
+done

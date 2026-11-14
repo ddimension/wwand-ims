@@ -1,0 +1,84 @@
+# The IMS PDN for the router's own IMS UE, in its own VRF (HW-tested on the
+# Chateau / RG650E with Vodafone DE, 2026-11-14). Merge into
+# /etc/config/network and /etc/config/firewall, install
+# wwand-ims-l3mdev.hotplug as /etc/hotplug.d/iface/25-wwand-ims-l3mdev, then
+# run a full `/etc/init.d/network restart` (detached when over ssh).
+#
+# The modem's own IMS goes off (Quectel: AT+QCFG="ims",2), or it registers the
+# same identity next to ours.
+
+# ---- /etc/config/network ---------------------------------------------------
+
+config device 'ims'
+	option type 'vrf'
+	option name 'ims'
+	option table '30'
+	list ports 'wwims'
+
+config interface 'ims_vrf'          # brings the VRF master up
+	option proto 'none'
+	option device 'ims'
+
+config interface 'wwims'
+	option proto 'wwand'
+	option modem 'wwmodem0'
+	option device 'wwims'
+	option mux_id 'auto'
+	option apn 'ims'
+	option pdp_type 'ipv6'          # Vodafone DE: an IPv4 request is refused
+	                                #   (ipv4v6 degrades to v6 since wwand
+	                                #   ims-pcscf, but says so in the log)
+	option ims '1'                  # IMCN + P-CSCF via PCO; a wwand_sim APN
+	                                #   does not override this interface
+	option ip4table '30'
+	option ip6table '30'
+	option peerdns '0'
+	option delegate '0'             # REQUIRED: else netifd hands the IMS /64
+	                                #   to LAN interfaces with ip6assign
+	# option profile '2'            # the profile dialled. Without it: the
+	                                #   mux channel's, on carrier configs the
+	                                #   modem's own `ims` (2) or `sos` (3).
+	                                #   wwand writes APN and PDP type into
+	                                #   whichever it is (wwand
+	                                #   docs/design/dynamic-profiles.md)
+
+# ---- /etc/config/firewall --------------------------------------------------
+
+config zone 'ims'
+	option name 'ims'
+	option input 'REJECT'
+	option output 'ACCEPT'
+	option forward 'REJECT'
+	list network 'wwims'
+	list device 'ims'
+
+config rule 'ims_esp'
+	option name 'IMS-ESP'
+	option src 'ims'
+	option proto 'esp'
+	option target 'ACCEPT'
+
+config rule 'ims_sip'                # the protected ports (after ESP)
+	option name 'IMS-SIP'
+	option src 'ims'
+	option proto 'tcp udp'
+	option dest_port '5062 5064'
+	option target 'ACCEPT'
+
+config rule 'ims_rtp'
+	option name 'IMS-RTP'
+	option src 'ims'
+	option proto 'udp'
+	option dest_port '40000-40001'
+	option target 'ACCEPT'
+
+config rule 'ims_icmp'
+	option name 'IMS-ICMP'
+	option src 'ims'
+	option proto 'icmp ipv6-icmp'
+	option target 'ACCEPT'
+
+# The P-CSCF: QMI reports only an IPv4 list (status.contexts.wwims.ipv4.pcscf).
+# For an IPv6 PDN read it with AT+CGCONTRDP=<cid> until wwand has it.
+# Do not use the modem's own interface identifier from CGCONTRDP as the UE
+# address: the modem keeps packets to it for itself.

@@ -2,3 +2,10 @@ tests/wwand
 tests/ims_plugin.uc
 tests/sipd_sip.uc
 tests/sipd_core.uc
+tests/ue_aka.uc
+tests/ue_secagree.uc
+tests/.build/
+tests/ue_reg.uc
+tests/ue_call.uc
+# call captures (pcap with ESP keys, diag traces, audio): large, kept out of git
+research/rg650e-245/call-20261114/

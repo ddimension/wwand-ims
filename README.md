@@ -7,6 +7,8 @@ for upstream: the wwand core stays free of voice code.
 **Status: early.** No package yet. What exists:
 - the design (`docs/design.md`) and the configuration model
   (`files/wwand_ims.config`);
+- the first parts of a router-side IMS UE (`ue/`, `src/xfrm/`): IMS-AKA
+  through the card and sec-agree over netlink, host-tested;
 - the wwand plugin `plugins/ims.uc`: IMS registration and service state,
   network IMS voice support and call control over QMI (IMSA, IMS, NAS,
   Voice; libqmi 1.38), as `ubus call wwand modem_plugin
@@ -34,12 +36,19 @@ operator is then a new profile and no new code.
 
 | Path | Language | What |
 |---|---|---|
-| `plugins/ims.uc` | ucode, inside the wwand daemon | IMS state and call control over QMI (exists); applying a profile to the modem (planned) |
-| `src-ucode/sipd.uc` | ucode | SIP registrar + B2BUA for the LAN phone(s) |
-| `src/mediad/` | C | RTP/RTCP to and from the modem's PCM audio, G.711/G.722, jitter buffer |
+| `ue/aka.uc` | ucode | IMS-AKA: USIM AUTHENTICATE over wwand's APDU channel, Digest AKAv1-MD5, identities from the IMSI |
+| `ue/secagree.uc` | ucode | sec-agree (TS 33.203): headers, ESP keys, the four SAs and their policies |
+| `src/xfrm/` | C | ucode module `wwand_ims_xfrm`: SAs and policies over NETLINK_XFRM |
+| `plugins/ims.uc` | ucode, inside the wwand daemon | IMS state and call control over QMI (the modem-IMS backend) |
+| `sipd/` | ucode | SIP registrar + B2BUA for the LAN phone(s) |
 | `src/mcfg/` | C | MBN (MCFG) inspection; only the SHA-2 part exists so far |
-| `tools/` | sh | snapshots and diffs of the modem's EFS items |
+| `tools/` | sh, ucode, python | EFS snapshots, call tests, modem F3 tracing |
 | `files/` | | example config, init script |
+
+Since 2026-11-14 the router is the IMS UE itself and the modem only
+carries the IMS PDN and lends the card (`docs/design.md`, section 1).
+Tests: `sh tests/run.sh`; the `nstest_*` ones run against the real kernel
+in a user + network namespace of their own.
 
 ## Licence
 
