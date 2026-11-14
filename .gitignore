@@ -9,3 +9,5 @@ tests/ue_reg.uc
 tests/ue_call.uc
 # call captures (pcap with ESP keys, diag traces, audio): large, kept out of git
 research/rg650e-245/call-20261114/
+tests/sipd_line_ue.uc
+tests/ctl_ims.uc

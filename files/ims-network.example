@@ -62,7 +62,7 @@ config rule 'ims_sip'                # the protected ports (after ESP)
 	option name 'IMS-SIP'
 	option src 'ims'
 	option proto 'tcp udp'
-	option dest_port '5062 5064'
+	option dest_port '5062 5064 5072 5074'  # both protected port pairs (sipd refreshes on the other)
 	option target 'ACCEPT'
 
 config rule 'ims_rtp'

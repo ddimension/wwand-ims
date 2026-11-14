@@ -59,6 +59,18 @@ function v6_dotted(s)
 	return a;
 }
 
+// P-Access-Network-Info from wwand's modem_cells (QMI NAS Get Cell Location
+// Info): the serving LTE cell's PLMN, TAC and 28-bit cell identity. TDD from
+// the EARFCN (bands 33 and up start at 36000, TS 36.101 5.7.3). null without one.
+export function pani_of(cells)
+{
+	let l = cells?.cells?.lte_intra;
+	let m = match(l?.plmn ?? '', /^([0-9]{3})\/([0-9]{2,3})$/);
+	if (!m || l.tac == null || l.global_cell_id == null)
+		return null;
+	return REG.pani_eutran(+m[1], +m[2], length(m[2]), l.tac, l.global_cell_id, (l.earfcn ?? 0) >= 36000);
+}
+
 // the fields of an AT response line, quotes respected
 function at_fields(l)
 {
@@ -170,12 +182,15 @@ export function create(o)
 		if (!ue || !p)
 			return { error: sprintf('no UE address or P-CSCF (ipv6 %s, ipv4 %s, P-CSCF %J)', v6 ?? '-', v4 ?? '-', pcscf) };
 
-		let pani = null;
-		let q = at('AT+QENG="servingcell"');
-		let mm = match(q?.response?.[0] ?? '',
-			/"LTE","(FDD|TDD)",([0-9]+),([0-9]+),([0-9A-Fa-f]+),[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,([0-9A-Fa-f]+),/);
-		if (mm)
-			pani = REG.pani_eutran(+mm[2], +mm[3], length(mm[3]) == 3 ? 3 : 2, hex(mm[5]), hex(mm[4]), mm[1] == 'TDD');
+		let pani = pani_of(bus.call('wwand', 'modem_cells', { modem: o.modem }));
+		if (!pani) {
+			// no QMI cell info (an AT-only or NCM modem): Quectel's own report
+			let q = at('AT+QENG="servingcell"');
+			let mm = match(q?.response?.[0] ?? '',
+				/"LTE","(FDD|TDD)",([0-9]+),([0-9]+),([0-9A-Fa-f]+),[0-9]+,[0-9]+,[0-9]+,[0-9]+,[0-9]+,([0-9A-Fa-f]+),/);
+			if (mm)
+				pani = REG.pani_eutran(+mm[2], +mm[3], length(mm[3]) == 3 ? 3 : 2, hex(mm[5]), hex(mm[4]), mm[1] == 'TDD');
+		}
 
 		return { imsi: m.imsi, imei: m.imei, mnc_len: o.mnc_len ?? m.registration?.plmn?.mnc_digits ?? 2,
 		         fam: fam, ue_addr: ue, pcscf: p, pani: pani };

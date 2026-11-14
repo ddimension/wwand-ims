@@ -1,0 +1,12 @@
+#!/bin/sh
+# wwand-ims-setup [modem] [--apply] [--force] [--iface NAME] [--table N]
+#
+# The router side of the IMS UE, from the modem's carrier config (MBN): the
+# IMS PDN interface with the MBN's IMS profile (APN, PDP type), its VRF, the
+# firewall zone, the l3mdev hotplug and sipd's `ue` line. A dry run unless
+# --apply; sections that exist and differ are only rewritten with --force.
+# The modem side (VoLTE FGIs, the modem's own IMS off) is `wwandctl ims fix`.
+case "$1" in
+	-*|'') exec wwandctl ims setup "$@" ;;
+	*) m=$1; shift; exec wwandctl ims "$m" setup "$@" ;;
+esac

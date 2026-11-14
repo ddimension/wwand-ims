@@ -3,7 +3,8 @@
 #
 # Lay out sipd and the IMS UE the way the init script loads them, until there
 # is a package: the ucode files under their module names in
-# DESTDIR/usr/share/wwand-ims, the xfrm module next to them, the init script.
+# DESTDIR/usr/share/wwand-ims, the xfrm module next to them, the init script,
+# `wwandctl ims` and wwand-ims-setup.
 # A dev deploy to a router:
 #
 #   sh tools/install-sipd.sh /tmp/stage /vol/release/wwand-ims/build-target/xfrm/wwand_ims_xfrm.so
@@ -31,4 +32,9 @@ cp "$top/ue/call.uc"       "$lib/ue_call.uc"
 [ -n "$so" ] && cp "$so" "$lib/wwand_ims_xfrm.so"
 cp "$top/files/wwand-ims-sipd.init" "$dest/etc/init.d/wwand-ims-sipd"
 chmod +x "$dest/etc/init.d/wwand-ims-sipd"
+# `wwandctl ims` (a wwandctl command of this package) and its setup entry
+mkdir -p "$dest/usr/share/ucode/wwand/ctl" "$dest/usr/sbin"
+cp "$top/ctl/ims.uc" "$dest/usr/share/ucode/wwand/ctl/ims.uc"
+cp "$top/files/wwand-ims-setup" "$dest/usr/sbin/wwand-ims-setup"
+chmod +x "$dest/usr/sbin/wwand-ims-setup"
 echo "installed into $dest"
