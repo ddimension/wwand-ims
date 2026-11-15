@@ -78,7 +78,8 @@ config rule 'ims_icmp'
 	option proto 'icmp ipv6-icmp'
 	option target 'ACCEPT'
 
-# The P-CSCF: QMI reports only an IPv4 list (status.contexts.wwims.ipv4.pcscf).
-# For an IPv6 PDN read it with AT+CGCONTRDP=<cid> until wwand has it.
-# Do not use the modem's own interface identifier from CGCONTRDP as the UE
-# address: the modem keeps packets to it for itself.
+# The P-CSCF comes from wwand's QMI context status: status.contexts.wwims
+# carries ipv6.pcscf (WDS TLV 0x2e) and ipv4.pcscf (0x23). sipd's UE line takes
+# it from there, IPv6 first; `option pcscf` in wwand_ims pins one by hand.
+# Do not use the modem's own interface identifier (the ::1 from CGCONTRDP) as
+# the UE address: the modem keeps packets addressed to it for itself.

@@ -702,8 +702,11 @@ function cmd_setup(ctx, modem, m, opts)
 	}
 	printf('\nwritten (%d section(s)). Then:\n', length(todo));
 	printf('  wwandctl ims %s fix                         the modem side, if `check` says so\n', modem);
+	printf('  uci set wwand_ims.<extension>.password=...  the phone/PBX password (sip_gateway listen too)\n');
 	printf('  setsid /etc/init.d/network restart          (detached over ssh)\n');
-	printf('  /etc/init.d/firewall reload; /etc/init.d/wwand-ims-sipd restart\n');
+	printf('  /etc/init.d/firewall reload\n');
+	printf('  /etc/init.d/wwand-ims-sipd enable; /etc/init.d/wwand-ims-sipd restart\n');
+	printf('  wwandctl ims %s check  &&  wwandctl status   verify (look for the IMS UE row)\n', modem);
 }
 
 // ---- test call: our own UE registers and dials a number, echo on -------------------
