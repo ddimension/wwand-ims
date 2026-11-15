@@ -97,6 +97,20 @@ function cgdcont_parse(lines)
 	return out;
 }
 
+// an IPv6 address in colon form, longest zero run shortened (RFC 5952), for a
+// clean --pcscf: wwand's QMI P-CSCF list comes uncompressed (2a01:…:0:0:0:5)
+function v6_short(a)
+{
+	if (index(a ?? '', ':') < 0 || index(a, '::') >= 0)
+		return a;
+	for (let z in [ ':0:0:0:0:0:0:0:', ':0:0:0:0:0:0:', ':0:0:0:0:0:', ':0:0:0:0:', ':0:0:0:', ':0:0:' ])
+		if (index(':' + a + ':', z) >= 0) {
+			let s = replace(':' + a + ':', z, '::', 1);
+			return replace(replace(s, /^:([^:])/, '$1'), /([^:]):$/, '$1');
+		}
+	return a;
+}
+
 // the profile the carrier config made for IMS: the one marked IMCN, else the
 // one named ims (never the emergency `sos`)
 function ims_profile(profiles)
@@ -210,6 +224,55 @@ function at(ctx, modem, cmd)
 {
 	let r = try_call('modem_at', { modem: modem, command: cmd, timeout: 5000 });
 	return (r == null || r.ok === false) ? null : (r.response ?? []);
+}
+
+// Turn the modem's own IMS off so our UE can take the IMS PDN. Try QMI first
+// (the ims plugin's SET_SERVICE_ENABLE 0x008F, ims_service=0 + volte=0: works
+// on any Qualcomm modem, takes effect at once, no reset), then the Quectel AT
+// (AT+QCFG="ims",2: persistent, read at boot, so it survives the reset the FGI
+// change needs). Both where both apply — QMI alone would be undone by that
+// reset. Never dies: on a modem that answers neither, the caller continues.
+// `modem_ims` is the current AT+QCFG value (null if unknown). Returns
+// { via: [...], reset, already_at }.
+function disable_modem_ims(ctx, modem, m, modem_ims)
+{
+	let via = [], reset = false;
+
+	let q = plugin(modem, 'volte_enable', { reg: 0, volte: 0 });
+	if (q != null && q.ok !== false && q.error == null)
+		push(via, 'qmi');
+
+	if (is_quectel(m) && modem_ims != 2 && at(ctx, modem, 'AT+QCFG="ims",2') != null) {
+		push(via, 'at');
+		reset = true;
+	}
+	return { via: via, reset: reset, already_at: is_quectel(m) && modem_ims == 2 };
+}
+
+// Enable the VoLTE LTE FGIs. There is NO QMI message for the FGIs; the vendor
+// way is the carrier MBN (`wwandctl ims mbn patch`, a command of its own, not a
+// QMI stand-in here, docs/qmi-beyond-libqmi.md). So the only automatic route is
+// the Quectel AT (AT+QNWCFG="lte_fgi_fdd", read at boot, so a reset follows).
+// Kept as try-QMI-then-AT for the day a QMI message exists. Never dies. Returns
+// { via, reset, already, note, error, before, after }.
+function enable_fgi(ctx, modem, m)
+{
+	// 1) QMI: none today
+	// 2) AT (Quectel)
+	if (!is_quectel(m))
+		return { note: 'no QMI FGI message, and not a Quectel module: set the FGIs with `wwandctl ims mbn patch --upload`' };
+	let before = fgi_parse(at(ctx, modem, 'AT+QNWCFG="lte_fgi_fdd"'));
+	if (before == null)
+		return { error: 'the modem does not answer AT+QNWCFG="lte_fgi_fdd" (firmware without it?)' };
+	let p = fgi_plan(before);
+	if (!length(p.missing))
+		return { via: 'at', already: true, before: before };
+	if (at(ctx, modem, sprintf('AT+QNWCFG="lte_fgi_fdd",%s', p.arg)) == null)
+		return { error: 'AT+QNWCFG="lte_fgi_fdd" refused', before: before };
+	let after = fgi_parse(at(ctx, modem, 'AT+QNWCFG="lte_fgi_fdd"'));
+	if (length(fgi_plan(after ?? []).missing))
+		return { error: sprintf('the FGI list did not take: %s', join(':', after ?? [])), before: before };
+	return { via: 'at', reset: true, missing: p.missing, before: before, after: after };
 }
 
 function is_quectel(m)
@@ -519,42 +582,43 @@ function cmd_check(ctx, modem, st, m)
 
 function cmd_fix(ctx, modem, m, opts)
 {
-	if (!is_quectel(m))
-		die(sprintf('%s is not a Quectel module: the FGI and IMS switches here are Quectel AT commands', modem));
-
-	let s = state(ctx, modem, m);
+	let st = state(ctx, modem, m);
 	let reset = false;
 
-	if (s.fgi == null)
-		die('the modem does not answer AT+QNWCFG="lte_fgi_fdd" (firmware without it?)');
-	let p = fgi_plan(s.fgi);
-	if (length(p.missing)) {
-		printf('LTE FGI: enabling %s\n', join(', ', p.missing));
-		printf('  before: %s\n', join(':', s.fgi));
-		let r = at(ctx, modem, sprintf('AT+QNWCFG="lte_fgi_fdd",%s', p.arg));
-		if (r == null)
-			die('AT+QNWCFG="lte_fgi_fdd" refused');
-		let now = fgi_parse(at(ctx, modem, 'AT+QNWCFG="lte_fgi_fdd"'));
-		if (length(fgi_plan(now).missing))
-			die(sprintf('the FGI list did not take: %s', join(':', now ?? [])));
-		printf('  after:  %s\n', join(':', now));
-		printf('  undo:   AT+QNWCFG="lte_fgi_fdd",%s and a modem reset\n', join(':', s.fgi));
-		reset = true;
-	}
-	else
+	// --- VoLTE FGIs: QMI if there ever is one, else the Quectel AT ---
+	let f = enable_fgi(ctx, modem, m);
+	if (f.error)
+		printf('LTE FGI: %s (continuing)\n', f.error);
+	else if (f.note)
+		printf('LTE FGI: %s\n', f.note);
+	else if (f.already)
 		printf('LTE FGI 3 and 7: already on\n');
-
-	if (!opts.keep_modem_ims && s.modem_ims != 2) {
-		printf('modem\'s own IMS: %d -> 2 (off; our UE registers instead)\n', s.modem_ims ?? -1);
-		if (at(ctx, modem, 'AT+QCFG="ims",2') == null)
-			die('AT+QCFG="ims",2 refused');
-		reset = true;
+	else {
+		printf('LTE FGI: enabled %s (via %s)\n', join(', ', f.missing), f.via);
+		printf('  before: %s\n  after:  %s\n', join(':', f.before), join(':', f.after));
+		printf('  undo:   AT+QNWCFG="lte_fgi_fdd",%s and a modem reset\n', join(':', f.before));
+		if (f.reset)
+			reset = true;
 	}
-	else if (s.modem_ims == 2)
-		printf('modem\'s own IMS: already off\n');
+
+	// --- the modem's own IMS off: QMI first, then the Quectel AT ---
+	if (opts.keep_modem_ims)
+		printf('modem\'s own IMS: left as is (--keep-modem-ims)\n');
+	else {
+		let d = disable_modem_ims(ctx, modem, m, st.modem_ims);
+		if (d.reset)
+			reset = true;
+		if (length(d.via))
+			printf('modem\'s own IMS: disabled via %s (our UE registers instead)%s\n',
+			       join(' + ', d.via), index(d.via, 'at') < 0 ? ' — QMI only, not persistent across a modem reboot' : '');
+		else if (d.already_at)
+			printf('modem\'s own IMS: already off\n');
+		else
+			printf('modem\'s own IMS: could not disable over QMI or AT (continuing; see `wwandctl ims %s check`)\n', modem);
+	}
 
 	if (!reset)
-		return printf('nothing to change\n');
+		return printf('done (no reset needed)\n');
 	if (opts.no_reset)
 		return printf('the modem reads these at boot: reset it (wwandctl reset %s) before the UE registers\n', modem);
 	printf('resetting the modem (it reads these at boot)\n');
@@ -642,6 +706,86 @@ function cmd_setup(ctx, modem, m, opts)
 	printf('  /etc/init.d/firewall reload; /etc/init.d/wwand-ims-sipd restart\n');
 }
 
+// ---- test call: our own UE registers and dials a number, echo on -------------------
+// Runs the proven UE driver (tools/ims-register.uc, installed with wwand-ims):
+// register over the IMS PDN, dial the number, count/echo the RTP, hang up.
+
+const UE_DRIVER = '/usr/share/wwand-ims/ims-register.uc';
+const UE_LIB    = '/usr/share/wwand-ims';
+
+// the sipd ims_modem section: iface / vrf / apn / mnc_len defaults
+function ims_modem_cfg()
+{
+	let c = {};
+	try {
+		require('uci').cursor().foreach('wwand_ims', 'ims_modem', (x) => {
+			c.iface ??= x.ims_iface; c.vrf ??= x.vrf; c.apn ??= x.ims_apn;
+			c.mnc_len ??= x.mnc_len; c.modem ??= x.modem;
+		});
+	} catch (e) {}
+	return c;
+}
+
+// the P-CSCF from wwand's QMI (status contexts.<iface>.ipv6/ipv4.pcscf: QMI WDS
+// Get Current Settings, the IPv6 0x2E and IPv4 0x23 lists), IPv6 first. No AT:
+// wwand reads it over QMI already (needs a core with the 0x2E decode).
+function discover_pcscf(st, iface)
+{
+	let c = st?.contexts?.[iface];
+	for (let l in [ c?.ipv6?.pcscf, c?.ipv4?.pcscf ])
+		for (let a in (type(l) == 'array') ? l : [])
+			if (type(a) == 'string')
+				return v6_short(a);
+	return null;
+}
+
+function cmd_call(ctx, modem, m, st, args)
+{
+	let o = { number: null, talk: 12, ring: 30, hold: null, echo: 1, pcscf: null,
+	          iface: null, vrf: null, mnc_len: null };
+	for (let i = 0; i < length(args); i++) {
+		switch (args[i]) {
+		case '--talk':    o.talk = +args[++i]; break;
+		case '--ring':    o.ring = +args[++i]; break;
+		case '--hold':    o.hold = +args[++i]; break;
+		case '--no-echo': o.echo = 0; break;
+		case '--pcscf':   o.pcscf = args[++i]; break;
+		case '--iface':   o.iface = args[++i]; break;
+		case '--vrf':     o.vrf = args[++i]; break;
+		case '--mnc-len': o.mnc_len = +args[++i]; break;
+		default:
+			if (substr(args[i], 0, 2) == '--')
+				die(sprintf('unknown option %s', args[i]));
+			o.number ??= args[i];
+		}
+	}
+	if (!o.number)
+		die('usage: wwandctl ims [modem] call <number> [--talk S] [--ring S] [--hold S] [--no-echo] [--pcscf ADDR] [--iface N] [--vrf N]');
+	if (!fs.stat(UE_DRIVER))
+		die(sprintf('%s not installed (it ships with wwand-ims)', UE_DRIVER));
+
+	let cfg = ims_modem_cfg();
+	let iface = o.iface ?? cfg.iface ?? 'wwims';
+	let vrf   = o.vrf ?? cfg.vrf;
+	let pcscf = o.pcscf ?? discover_pcscf(st, iface);
+	if (!pcscf)
+		die(sprintf('no P-CSCF over QMI for %s (is it up? `ifup %s`; needs a wwand with the WDS 0x2E decode); or pass --pcscf ADDR', iface, iface));
+	let mnc = o.mnc_len ?? (cfg.mnc_len ? +cfg.mnc_len : null);
+
+	let argv = [ 'ucode', '-L', UE_LIB, '-L', '/usr/lib/ucode/*.so', UE_DRIVER,
+	             '--modem', modem, '--iface', iface, '--call', o.number, '--pcscf', pcscf,
+	             '--echo', sprintf('%d', o.echo), '--ring', sprintf('%d', o.ring),
+	             '--talk', sprintf('%d', o.talk) ];
+	if (vrf)          push(argv, '--vrf', vrf);
+	if (mnc)          push(argv, '--mnc-len', sprintf('%d', mnc));
+	if (o.hold != null) push(argv, '--hold', sprintf('%d', o.hold));
+
+	printf('calling %s through %s (iface %s, P-CSCF %s%s)\n', o.number, modem, iface, pcscf,
+	       o.echo ? ', echo on' : '');
+	// array form: no shell, so ucode's -L glob is expanded by ucode, not sh
+	return system(argv);
+}
+
 function cmd_ims(ctx, args)
 {
 	let st = ctx.status();
@@ -656,7 +800,7 @@ function cmd_ims(ctx, args)
 			require('uci').cursor().foreach('wwand_ims', 'ims_modem', (x) => { cfg ??= x.modem; });
 		} catch (e) { cfg = null; }
 		r = (cfg && st.modems?.[cfg]) ? { modem: cfg, consumed: false }
-		                              : ctx.resolve_modem(st, match(args[0] ?? '', /^(check|fix|setup|mbn)$/) ? null : args[0]);
+		                              : ctx.resolve_modem(st, match(args[0] ?? '', /^(check|fix|setup|mbn|call)$/) ? null : args[0]);
 	}
 	let rest = r.consumed ? slice(args, 1) : args;
 	let op = rest[0] ?? 'check';
@@ -665,6 +809,8 @@ function cmd_ims(ctx, args)
 
 	if (op == 'mbn')
 		return cmd_mbn(ctx, r.modem, m, slice(rest, 1));
+	if (op == 'call')
+		return cmd_call(ctx, r.modem, m, st, slice(rest, 1));
 
 	for (let i = 1; i < length(rest); i++) {
 		switch (rest[i]) {
@@ -694,6 +840,7 @@ return {
 		'ims [modem] fix [--no-reset]           VoLTE FGIs on, the modem\'s own IMS off (Quectel)',
 		'ims [modem] setup [--apply] [--force]  IMS PDN + VRF + firewall + sipd line from the MBN',
 		'ims [modem] mbn [list|patch|upload]    the VoLTE FGIs into the carrier MBN, load it (new or --replace)',
+		'ims [modem] call <number> [--no-echo]  one test VoLTE call from the router UE (--talk/--ring/--hold S)',
 	],
 
 	run: (ctx, args) => cmd_ims(ctx, args),
