@@ -301,11 +301,26 @@ function create(env)
 		c.remote = S.get(req, 'from');
 		call = c;
 		send(S.response(req, 100, 'Trying'), c.addr);
-		log('info', sprintf('sipd: outgoing call to %s over the IMS UE', number));
+
+		// CLIR: the PBX/Asterisk withholds the caller's number either with a
+		// Privacy header (id/user/header per RFC 3323) or an anonymous From.
+		// Pass that on so the IMS UE sends Privacy: id and an anonymous From
+		// while P-Preferred-Identity still carries our real IMPU (ue/call.uc).
+		let privacy = false;
+		let priv = S.get(req, 'privacy');
+		if (priv)
+			for (let tok in split(priv, ';'))
+				if (index([ 'id', 'user', 'header' ], lc(trim(tok))) >= 0)
+					privacy = true;
+		if (!privacy) {
+			let fu = S.parse_uri(S.uri_of(S.get(req, 'from') ?? ''))?.user;
+			privacy = lc(fu ?? '') == 'anonymous';
+		}
+		log('info', sprintf('sipd: outgoing call to %s over the IMS UE%s', number, privacy ? ' (CLIR)' : ''));
 
 		let ims_session = 1 + (env.now() % 100000);
 		c.lc = env.line.dial(number, (ev, d) => line_out_event(c, ev, d), {
-			ims_port: m.ims_port,
+			ims_port: m.ims_port, privacy: privacy,
 			offer: (qos, ver) => U.sdp_relay(req.body, env.line.ue_addr(), m.ims_port, ims_session, qos, ver),
 		});
 		if (!c.lc) {

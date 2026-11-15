@@ -353,6 +353,15 @@ export function create(o)
 
 	let to_hdr = () => sprintf('<%s>%s', self.target, self.to_tag ? ';tag=' + self.to_tag : '');
 
+	// the MO From: anonymous when the caller withholds the number (self.anon,
+	// from dial()'s opts.privacy), else our IMPU. The same value goes on the
+	// INVITE, CANCEL, ACK and every in-dialog request so the dialog ids match.
+	// P-Preferred-Identity still carries the real IMPU and Privacy: id asks the
+	// network to withhold it from the callee (RFC 3323/3325, TS 24.229 5.1.3).
+	let mo_from = () => sprintf('%s;tag=%s',
+		self.anon ? '"Anonymous" <sip:anonymous@anonymous.invalid>' : sprintf('<%s>', o.impu),
+		self.from_tag);
+
 	// a request inside the dialog (PRACK, BYE, ACK for 2xx). As UAS our From
 	// is the INVITE's To with our tag, our To its From (RFC 3261 12.2.1.1)
 	let in_dialog = (method, branch, cseq, extra, body) => {
@@ -364,7 +373,7 @@ export function create(o)
 			push(hs, [ 'To', self.uas.peer ]);
 		}
 		else {
-			push(hs, [ 'From', sprintf('<%s>;tag=%s', o.impu, self.from_tag) ]);
+			push(hs, [ 'From', mo_from() ]);
 			push(hs, [ 'To', to_hdr() ]);
 		}
 		push(hs, [ 'Call-ID', self.call_id ]);
@@ -390,7 +399,7 @@ export function create(o)
 		let hs = [ [ 'Via', via(self.invite.branch) ], [ 'Max-Forwards', '70' ] ];
 		for (let r in default_route)
 			push(hs, [ 'Route', r ]);
-		push(hs, [ 'From', sprintf('<%s>;tag=%s', o.impu, self.from_tag) ]);
+		push(hs, [ 'From', mo_from() ]);
 		push(hs, [ 'To', SIP.get(msg, 'to') ]);
 		push(hs, [ 'Call-ID', self.call_id ]);
 		push(hs, [ 'CSeq', sprintf('%d ACK', self.invite.cseq) ]);
@@ -558,6 +567,7 @@ export function create(o)
 
 		self.target = uri;
 		self.state = 'calling';
+		self.anon = !!opts?.privacy;	// CLIR: withhold our number from the callee
 		let branch = 'z9hG4bK' + rnd_hex(8);
 		if (o.preconditions !== false)
 			self.pre = { local: false, remote: false };
@@ -566,12 +576,14 @@ export function create(o)
 		let hs = [ [ 'Via', via(branch) ], [ 'Max-Forwards', '70' ] ];
 		for (let r in default_route)
 			push(hs, [ 'Route', r ]);
-		push(hs, [ 'From', sprintf('<%s>;tag=%s', o.impu, self.from_tag) ]);
+		push(hs, [ 'From', mo_from() ]);
 		push(hs, [ 'To', sprintf('<%s>', uri) ]);
 		push(hs, [ 'Call-ID', self.call_id ]);
 		push(hs, [ 'CSeq', sprintf('%d INVITE', ++self.cseq) ]);
 		push(hs, [ 'Contact', contact ]);
 		push(hs, [ 'P-Preferred-Identity', sprintf('<%s>', o.impu) ]);
+		if (self.anon)
+			push(hs, [ 'Privacy', 'id' ]);
 		push(hs, [ 'P-Preferred-Service', MMTEL_URN ]);
 		push(hs, [ 'Accept-Contact', sprintf('*;+g.3gpp.icsi-ref="%s"', MMTEL) ]);
 		push(hs, [ 'Supported', self.pre ? '100rel, precondition, timer, replaces' : '100rel, timer, replaces' ]);
@@ -599,7 +611,7 @@ export function create(o)
 		let hs = [ [ 'Via', via(self.invite.branch) ], [ 'Max-Forwards', '70' ] ];
 		for (let r in default_route)
 			push(hs, [ 'Route', r ]);
-		push(hs, [ 'From', sprintf('<%s>;tag=%s', o.impu, self.from_tag) ]);
+		push(hs, [ 'From', mo_from() ]);
 		push(hs, [ 'To', sprintf('<%s>', self.target) ]);
 		push(hs, [ 'Call-ID', self.call_id ]);
 		push(hs, [ 'CSeq', sprintf('%d CANCEL', self.invite.cseq) ]);

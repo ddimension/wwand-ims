@@ -598,7 +598,7 @@ export function create(o)
 			if (n == 'ended')
 				forget(c);
 			ev(n, d);
-		}, { offer: opts?.offer });
+		}, { offer: opts?.offer, privacy: opts?.privacy });
 		return c;
 	};
 

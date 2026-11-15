@@ -188,6 +188,30 @@ ok(length(s.out) >= 6, 'INVITE retransmitted until Timer B');
 eq(s.call.on_message(SIP.build('SIP/2.0 200 OK', [ [ 'Call-ID', 'other' ], [ 'CSeq', '1 INVITE' ] ], '')), false,
 	'another Call-ID is not ours');
 
+// ---- CLIR: a withheld number -> anonymous From + Privacy: id -----------------------
+
+s = setup();
+s.call.dial('+4915550123456', s.ev, { privacy: true });
+inv = s.out[0];
+eq(SIP.get(inv.msg, 'from'), '"Anonymous" <sip:anonymous@anonymous.invalid>;tag=ft1',
+	'CLIR INVITE: anonymous From, our tag kept');
+eq(SIP.get(inv.msg, 'privacy'), 'id', 'CLIR INVITE: Privacy: id');
+eq(SIP.get(inv.msg, 'p-preferred-identity'), '<' + IMPU + '>',
+	'CLIR INVITE: P-Preferred-Identity still carries the real IMPU');
+s.call.on_message(resp(inv.msg, 180, 'Ringing', RR));
+s.call.hangup();
+can = s.last();
+eq([ can.msg.method, SIP.get(can.msg, 'from') ],
+	[ 'CANCEL', '"Anonymous" <sip:anonymous@anonymous.invalid>;tag=ft1' ],
+	'CLIR CANCEL: the same anonymous From so the dialog ids match');
+
+// a normal dial is unchanged: From = IMPU, no Privacy header
+s = setup();
+s.call.dial('+4915550123456', s.ev);
+inv = s.out[0];
+eq(SIP.get(inv.msg, 'from'), '<' + IMPU + '>;tag=ft1', 'no CLIR: From = IMPU');
+eq(SIP.get(inv.msg, 'privacy'), null, 'no CLIR: no Privacy header');
+
 // ---- incoming (UAS) ------------------------------------------------------------------
 
 // an offer as the network sends it: AMR-WB twice (be + octet-aligned), AMR, DTMF

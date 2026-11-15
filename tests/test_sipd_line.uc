@@ -250,4 +250,29 @@ let core3 = CORE.create(env);
 eq(core3.restore({ asterisk: { ...persisted.asterisk, expires: clock - 1 }, nobody: persisted.asterisk }), 0,
 	'restart: expired and unknown users are dropped');
 
+// ---- CLIR detection: a withheld caller number -> opts.privacy ----------------------
+let inv_clir = (auth, cseq, cid, from, extra) => CRLF([
+	'INVITE sip:+4915550123456@192.168.203.245 SIP/2.0',
+	'Via: SIP/2.0/UDP 10.0.248.22:6060;branch=z9hG4bK-c' + cseq,
+	'From: ' + from, 'To: <sip:+4915550123456@192.168.203.245>',
+	...(extra ?? []),
+	'Call-ID: ' + cid, 'CSeq: ' + cseq + ' INVITE', 'Contact: <sip:asterisk@10.0.248.22:6060>',
+	...(auth ? [ 'Proxy-Authorization: ' + auth ] : []), 'Content-Type: application/sdp',
+	'Content-Length: ' + length(PBX_OFFER), '', PBX_OFFER ]);
+let clir_dial = (cid, from, extra) => {
+	core.on_packet(inv_clir(null, 1, cid, from, extra), PBX);
+	let pc = S.get(last(), 'proxy-authenticate');
+	core.on_packet(inv_clir(authorize(pc, 'INVITE', 'sip:+4915550123456@192.168.203.245', 'asterisk', 'secret'),
+		2, cid, from, extra), PBX);
+	let d = dials[length(dials) - 1];
+	d.ev('ended', { status: 486, phrase: 'Busy Here', reason: 'rejected' });   // free the call
+	return d;
+};
+eq(clir_dial('clir1@pbx', '<sip:4952640@10.0.248.22>;tag=a1', [ 'Privacy: id' ]).opts.privacy, true,
+	'CLIR: Privacy: id from the PBX -> opts.privacy');
+eq(clir_dial('clir2@pbx', '"Anonymous" <sip:anonymous@anonymous.invalid>;tag=a2').opts.privacy, true,
+	'CLIR: an anonymous From -> opts.privacy');
+eq(clir_dial('clir3@pbx', '<sip:4952640@10.0.248.22>;tag=a3', [ 'Privacy: none' ]).opts.privacy, false,
+	'no CLIR: Privacy: none and a normal From -> no privacy');
+
 done();
