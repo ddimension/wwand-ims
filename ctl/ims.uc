@@ -12,6 +12,22 @@
 //                                         the IMS PDN, its VRF, the firewall zone and
 //                                         sipd's line, from the modem's carrier config
 //                                         (also as `wwand-ims-setup`)
+//   wwandctl ims [modem] mbn [list]       the carrier configs (MBNs) the modem holds
+//   wwandctl ims [modem] mbn patch [--base FILE] [--fgi 3,7] [--item PATH=HEX]...
+//                                  [--out FILE] [--upload [--replace]]
+//                                         the VoLTE FGIs (or any EFS item) into an MBN
+//   wwandctl ims [modem] mbn upload FILE [--replace] [--no-activate]
+//                                         load it as a new config, select and activate
+//                                         it; --replace then deletes the one it replaces
+//
+// `mbn patch` is the vendor way to the FGIs (research/rg650e-245/NOTES.md,
+// 2026-11-15): the carrier MBN carries /nv/item_files/modem/lte/rrc/efs/
+// lte_fgi_r8, as 20 Qualcomm MBNs on a OnePlus 8T do, all with FGI 3 and 7
+// on. The base is --base FILE, or the active config read back over QMI
+// (PDC Get Config; not possible over a USB modem's 4 KB control channel,
+// see fetch_active). The result keeps the base's name; it is loaded under its SHA-1
+// (PDC Load Config through the ims plugin). The base's signature is not
+// renewed (ctl/mcfg.uc): the RG650E A05 applies such a file.
 //
 // `fix`, research/rg650e-245/NOTES.md (2026-11-14):
 // - LTE FGI 3 and 7 (RLC UM): a Quectel data module (RG650E) ships with them
@@ -237,6 +253,223 @@ function state(ctx, modem, m)
 	return s;
 }
 
+// ---- MBN: patch and upload (ctl/mcfg.uc) ---------------------------------------------
+
+function mcfg_lib()
+{
+	try { return require('wwand.ims_mcfg'); }
+	catch (e) { return require('ims_mcfg'); }
+}
+
+// "3,7" / "3:7" -> [ 3, 7 ]
+function num_list(s)
+{
+	return map(filter(split(s ?? '', /[,:]/), (x) => length(x)), (x) => +x);
+}
+
+// the FGIs to write: what the base has, plus the wanted ones (FGIs 1-32)
+function fgi_merge(have, want)
+{
+	let all = uniq([ ...(have ?? []), ...(want ?? []) ]);
+	return sort(filter(all, (f) => f >= 1 && f <= 32), (a, b) => a - b);
+}
+
+function plugin(modem, op, args)
+{
+	return try_call('modem_plugin', { modem: modem, plugin: 'ims', op: op, args: args ?? {} });
+}
+
+function configs(modem)
+{
+	let g = try_call('modem_carrier_config', { modem: modem, op: 'get' });
+	let l = try_call('modem_carrier_config', { modem: modem, op: 'list' });
+	return { active: g?.active, pending: g?.pending, list: l?.configs ?? l?.list ?? [] };
+}
+
+// the active config's file, read back from the modem over QMI (PDC Get
+// Config through the ims plugin) and checked: its SHA-1 is the config id.
+// On a USB modem (qmi_wwan) this fails. The modem sends the config in
+// frames of 4096 data bytes. Each frame's indication is 4133 bytes with its
+// headers, and qmi_wwan registers cdc-wdm with a 4096-byte buffer. The read
+// stops at 4096 bytes and the last 37 never come (HW, RG650E on the
+// Chateau, 2026-11-15: a raw 4096-byte read with QMUX length 0x1024). A
+// PCIe/MHI modem (32 KB control MTU) or QRTR is not limited so.
+function fetch_active(modem, id, dst)
+{
+	if (!id)
+		die('no active carrier config reported: pass --base FILE');
+	let r = plugin(modem, 'mbn_read', { id: id, path: dst });
+	if (r?.match === true)
+		return sprintf('the modem (QMI PDC Get Config, %d frames)', r.frames);
+	die(sprintf('the active config %s cannot be read back over QMI here (%s).\n' +
+		'PDC Get Config sends 4096-byte frames in 4133-byte messages; a USB modem\'s control channel (qmi_wwan/cdc-wdm) takes 4096.\n' +
+		'Pass --base FILE: the vendor MBN of that config (from the firmware package) or a saved copy.',
+		id, r?.match === false ? sprintf('the data read has SHA-1 %s', r.sha1) : sprintf('%J', r)));
+}
+
+function cmd_mbn_list(modem)
+{
+	let c = configs(modem);
+	if (!length(c.list))
+		die('the modem lists no carrier configs (PDC)');
+	for (let x in c.list)
+		printf('%s %s %7d  %s\n', x.id == c.active ? '*' : (x.id == c.pending ? '+' : ' '),
+			x.id, x.size ?? 0, x.description ?? x.name ?? '?');
+	printf('\n* active%s\n', c.pending ? ', + pending (after a reset)' : '');
+}
+
+function cmd_mbn_upload(ctx, modem, m, file, opts)
+{
+	let fs = require('fs'), d = require('digest');
+	let data = fs.readfile(file);
+	if (data == null)
+		die(sprintf('cannot read %s', file));
+	let id = d.sha1(data);
+	let c = configs(modem);
+	let prev = c.active;
+
+	if (length(filter(c.list, (x) => x.id == id)))
+		printf('%s: already loaded as %s\n', file, id);
+	else {
+		printf('loading %s (%d bytes) as %s\n', file, length(data), id);
+		let r = plugin(modem, 'mbn_load', { path: file });
+		if (r == null || r.ok === false || r.error)
+			die(sprintf('load refused: %J', r));
+		if (!length(filter(configs(modem).list, (x) => x.id == id)))
+			die('loaded, but the modem does not list it');
+	}
+
+	if (prev == id && !c.pending)
+		printf('it is the active config already\n');
+	else {
+		let s = try_call('modem_carrier_config', { modem: modem, op: 'set', id: id });
+		if (s == null || s.ok === false)
+			die(sprintf('select refused: %J', s));
+		printf('selected\n');
+		if (opts.no_activate)
+			return printf('not activated: it takes effect at the next modem reset\n');
+		let a = plugin(modem, 'mbn_activate', {});
+		if (a == null || a.ok === false || a.error)
+			die(sprintf('activate refused: %J', a));
+		printf('activated; the modem resets, waiting for it');
+		let now = null;
+		for (let i = 0; i < 60 && now != id; i++) {
+			system('sleep 5');
+			printf('.');
+			now = configs(modem).active;
+		}
+		printf('\n');
+		if (now != id)
+			die(sprintf('the modem did not come back with %s active (active: %s)', id, now ?? 'none'));
+		printf('active: %s\n', id);
+	}
+
+	if (is_quectel(m)) {
+		let f = fgi_parse(at(ctx, modem, 'AT+QNWCFG="lte_fgi_fdd"'));
+		if (f != null)
+			printf('LTE FGI now: %s (3 and 7 %s)\n', join(':', f), length(fgi_plan(f).missing) ? 'MISSING' : 'on');
+	}
+
+	if (opts.replace) {
+		if (!prev || prev == id)
+			return printf('--replace: nothing to delete\n');
+		let r = plugin(modem, 'mbn_delete', { id: prev });
+		if (r == null || r.ok === false || r.error)
+			die(sprintf('delete of %s refused: %J', prev, r));
+		let gone = !length(filter(configs(modem).list, (x) => x.id == prev));
+		printf('replaced: %s %s\n', prev, gone ? 'deleted' : 'still listed (the modem kept it)');
+		printf('  undo: wwandctl ims %s mbn upload <the original file>%s\n', modem,
+			opts.base ? sprintf(' (%s)', opts.base) : '');
+	}
+}
+
+function cmd_mbn_patch(ctx, modem, m, opts)
+{
+	let fs = require('fs'), d = require('digest'), M = mcfg_lib();
+	let c = configs(modem);
+	let base = opts.base, from = base;
+	if (!base) {
+		base = '/tmp/wwand-ims-base.mbn';
+		from = fetch_active(modem, c.active, base);
+	}
+	let buf = fs.readfile(base);
+	if (buf == null)
+		die(sprintf('cannot read %s', base));
+	let p = M.parse(buf);
+	printf('base %s: "%s", %d items, %d bytes, id %s\n', from, p.name ?? '?', length(p.items), length(buf), d.sha1(buf));
+
+	let changes = [];
+	for (let it in opts.items) {
+		let kv = match(it, /^(\/[^=]+)=([0-9a-fA-F]*)$/);
+		if (!kv || length(kv[2]) % 2)
+			die(sprintf('--item %s: PATH=HEX expected', it));
+		push(changes, [ kv[1], M.set_item(p, kv[1], M.hex2bin(kv[2])) ]);
+	}
+	if (opts.fgi || !length(opts.items)) {
+		let want = opts.fgi ?? FGI_VOLTE;
+		let have = M.fgi_of(p);
+		let src = 'the MBN';
+		let list = have?.list;
+		if (list == null && is_quectel(m)) {
+			list = filter(fgi_parse(at(ctx, modem, 'AT+QNWCFG="lte_fgi_fdd"')) ?? [], (f) => f <= 32);
+			src = 'the modem (AT+QNWCFG)';
+		}
+		if (list == null || !length(list))
+			die('the base FGIs are unknown (no lte_fgi_r8 in the MBN, no AT answer): pass --item PATH=HEX');
+		let all = fgi_merge(list, want);
+		printf('LTE FGI (lte_fgi_r8): from %s %s\n', src, join(':', list));
+		printf('                      to %s\n', join(':', all));
+		push(changes, [ M.FGI_R8, M.set_item(p, M.FGI_R8, M.fgi_data(have?.prefix ?? M.rrc_prefix(p), all)) ]);
+	}
+	for (let ch in changes)
+		printf('  %-55s %s\n', ch[0], ch[1]);
+	if (!length(filter(changes, (ch) => ch[1] != 'unchanged')))
+		return printf('nothing to change\n');
+
+	let out = M.build(p, d);
+	let dst = opts.out ?? '/tmp/wwand-ims-patched.mbn';
+	if (!fs.writefile(dst, out.buf))
+		die(sprintf('cannot write %s', dst));
+	printf('wrote %s: %d bytes, id %s (%s digests renewed, the signature is the base\'s)\n',
+		dst, length(out.buf), d.sha1(out.buf), out.algo);
+	if (opts.upload)
+		return cmd_mbn_upload(ctx, modem, m, dst, opts);
+	printf('upload: wwandctl ims %s mbn upload %s [--replace]\n', modem, dst);
+}
+
+function cmd_mbn(ctx, modem, m, args)
+{
+	let sub = args[0] ?? 'list';
+	let opts = { items: [] };
+	let file = null;
+	for (let i = 1; i < length(args); i++) {
+		switch (args[i]) {
+		case '--base': opts.base = args[++i]; break;
+		case '--out': opts.out = args[++i]; break;
+		case '--fgi': opts.fgi = num_list(args[++i]); break;
+		case '--item': push(opts.items, args[++i]); break;
+		case '--upload': opts.upload = true; break;
+		case '--replace': opts.replace = true; break;
+		case '--no-activate': opts.no_activate = true; break;
+		default:
+			if (sub == 'upload' && file == null && substr(args[i], 0, 2) != '--')
+				file = args[i];
+			else
+				die(sprintf('unknown option %s', args[i]));
+		}
+	}
+	switch (sub) {
+	case 'list':   return cmd_mbn_list(modem);
+	case 'patch':  return cmd_mbn_patch(ctx, modem, m, opts);
+	case 'upload':
+		if (!file)
+			die('usage: wwandctl ims [modem] mbn upload FILE [--replace] [--no-activate]');
+		return cmd_mbn_upload(ctx, modem, m, file, opts);
+	default:
+		die('usage: wwandctl ims [modem] mbn [list] | patch [--base FILE] [--fgi 3,7] [--item PATH=HEX] [--out FILE] [--upload [--replace]] | upload FILE [--replace] [--no-activate]');
+	}
+}
+
 // ---- commands ---------------------------------------------------------------------------
 
 function cmd_check(ctx, modem, st, m)
@@ -254,7 +487,7 @@ function cmd_check(ctx, modem, st, m)
 		let p = fgi_plan(s.fgi);
 		line('LTE FGI 3 and 7 (VoLTE)', s.fgi == null ? 'unknown (no answer)' :
 			(length(p.missing) ? sprintf('missing %s', join(', ', p.missing)) : 'on'),
-			s.fgi != null && !length(p.missing), sprintf('wwandctl ims %s fix', modem));
+			s.fgi != null && !length(p.missing), sprintf('wwandctl ims %s fix, or mbn patch --upload', modem));
 		line('modem\'s own IMS', s.modem_ims == null ? 'unknown' :
 			sprintf('%d (%s)', s.modem_ims, { '0': 'per MBN', '1': 'on', '2': 'off' }[sprintf('%d', s.modem_ims)] ?? '?'),
 			s.modem_ims == 2, sprintf('wwandctl ims %s fix', modem));
@@ -423,12 +656,15 @@ function cmd_ims(ctx, args)
 			require('uci').cursor().foreach('wwand_ims', 'ims_modem', (x) => { cfg ??= x.modem; });
 		} catch (e) { cfg = null; }
 		r = (cfg && st.modems?.[cfg]) ? { modem: cfg, consumed: false }
-		                              : ctx.resolve_modem(st, match(args[0] ?? '', /^(check|fix|setup)$/) ? null : args[0]);
+		                              : ctx.resolve_modem(st, match(args[0] ?? '', /^(check|fix|setup|mbn)$/) ? null : args[0]);
 	}
 	let rest = r.consumed ? slice(args, 1) : args;
 	let op = rest[0] ?? 'check';
 	let m = st.modems[r.modem];
 	let opts = { iface: null, table: null };
+
+	if (op == 'mbn')
+		return cmd_mbn(ctx, r.modem, m, slice(rest, 1));
 
 	for (let i = 1; i < length(rest); i++) {
 		switch (rest[i]) {
@@ -448,7 +684,7 @@ function cmd_ims(ctx, args)
 	case 'fix':   return cmd_fix(ctx, r.modem, m, opts);
 	case 'setup': return cmd_setup(ctx, r.modem, m, opts);
 	default:
-		die('usage: wwandctl ims [modem] check | fix [--no-reset] [--keep-modem-ims] | setup [--apply] [--force] [--iface N] [--table N]');
+		die('usage: wwandctl ims [modem] check | fix [--no-reset] [--keep-modem-ims] | setup [--apply] [--force] [--iface N] [--table N] | mbn [list|patch|upload]');
 	}
 }
 
@@ -457,6 +693,7 @@ return {
 		'ims [modem] check                      what the router\'s own IMS UE needs (modem + router)',
 		'ims [modem] fix [--no-reset]           VoLTE FGIs on, the modem\'s own IMS off (Quectel)',
 		'ims [modem] setup [--apply] [--force]  IMS PDN + VRF + firewall + sipd line from the MBN',
+		'ims [modem] mbn [list|patch|upload]    the VoLTE FGIs into the carrier MBN, load it (new or --replace)',
 	],
 
 	run: (ctx, args) => cmd_ims(ctx, args),
@@ -465,6 +702,6 @@ return {
 	_t: {
 		fgi_parse: fgi_parse, fgi_plan: fgi_plan, qcfg_ims: qcfg_ims, cgdcont_parse: cgdcont_parse,
 		ims_profile: ims_profile, pdp_option: pdp_option, setup_sections: setup_sections,
-		section_plan: section_plan,
+		section_plan: section_plan, num_list: num_list, fgi_merge: fgi_merge,
 	},
 };

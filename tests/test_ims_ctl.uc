@@ -89,4 +89,13 @@ eq(LINE.pcscf_from_cgcontrdp([ '+CGCONTRDP: 2,6,"ims","x","y",,,"32.1.13.184.0.0
 eq(LINE.pcscf_from_cgcontrdp([ '+CGCONTRDP: 2,6,"ims.mnc002.mcc262.gprs","x","y",,,"42.1.8.240.4.0.9.84.0.0.0.0.0.0.0.5"' ], 'ims'),
 	[ '2a01:8f0:400:954::5' ], 'pcscf_from_cgcontrdp: the APN with an operator suffix');
 
+// the P-CSCFs from wwand's status (QMI 0x2E IPv6, 0x23 IPv4), as the RG650E
+// reported them on 2026-11-15: the same list as AT+CGCONTRDP, short form
+eq(LINE.pcscf_from_status({ ipv6: { pcscf: [ '2a01:8f0:400:955:0:0:0:5', '2a01:8f0:400:565:0:0:0:5' ] } }),
+	[ '2a01:8f0:400:955::5', '2a01:8f0:400:565::5' ], 'pcscf_from_status: the IPv6 list in short form');
+eq(LINE.pcscf_from_status({ ipv4: { pcscf: [ '10.1.2.3' ] }, ipv6: { pcscf: [ '2001:db8:0:0:0:0:0:5', '2001:db8::5' ] } }),
+	[ '2001:db8::5', '10.1.2.3' ], 'pcscf_from_status: IPv6 first, IPv4 after, no duplicates');
+eq(LINE.pcscf_from_status({ ipv6: { pcscf: null }, ipv4: null }), [], 'pcscf_from_status: none reported');
+eq(LINE.pcscf_from_status(null), [], 'pcscf_from_status: no context');
+
 done();

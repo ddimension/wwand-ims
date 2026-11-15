@@ -16,6 +16,7 @@ ln -sfn ../ue/reg.uc "$TESTDIR/ue_reg.uc"
 ln -sfn ../ue/call.uc "$TESTDIR/ue_call.uc"
 ln -sfn ../sipd/line_ue.uc "$TESTDIR/sipd_line_ue.uc"
 ln -sfn ../ctl/ims.uc "$TESTDIR/ctl_ims.uc"
+ln -sfn ../ctl/mcfg.uc "$TESTDIR/ims_mcfg.uc"
 
 # the native xfrm module (src/xfrm), built out of tree: under the build
 # project /vol/release/wwand-ims when it exists, else in tests/.build

@@ -91,6 +91,13 @@ eq([ li.result, li.token, li.received, li.remaining ], [ 0, 7, 1024, 476 ], 'pdc
 eq(tlv.pack(P.PDC.messages.ACTIVATE_CONFIG.req, { config_type: 1, token: 9 }),
 	T(0x01, u32(1)) + T(0x10, u32(9)), 'pdc activate: type and token');
 
+// Delete Config 0x25 (libqmi): 0x01 type, 0x10 token, 0x11 u8-counted id; its
+// indication (8T IDL, not libqmi): 0x01 result u16, 0x10 token
+eq(tlv.pack(P.PDC.messages.DELETE_CONFIG.req, { config_type: 1, token: 3, id: [ 0xa9, 0x1c ] }),
+	T(0x01, u32(1)) + T(0x10, u32(3)) + T(0x11, '\x02\xa9\x1c'), 'pdc delete: type, token, counted id');
+let di = tlv.unpack(P.PDC.messages.DELETE_CONFIG_IND.ind, T(0x01, u16(0)) + T(0x10, u32(3)));
+eq([ di.result, di.token ], [ 0, 3 ], 'pdc delete ind: result and token');
+
 // ---- ops over a fake client ---------------------------------------------------
 
 let answers = {

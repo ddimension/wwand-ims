@@ -296,6 +296,56 @@ const PDC = {
 				token:  { t: 0x10, f: 'u32' },
 			},
 		},
+		// libqmi "Delete Config" 0x25: 0x01 config type u32, 0x10 token, 0x11
+		// id (u8-counted bytes). Removes a loaded config from the modem's
+		// store. libqmi defines no indication for it; the OnePlus 8T's IDL
+		// (research/op8t-20261113/idl-libqmiservices.json, PDC ind 0x0025)
+		// has one: 0x01 result (2-byte enum), 0x10 token
+		// (docs/qmi-beyond-libqmi.md).
+		DELETE_CONFIG: {
+			id: 0x0025,
+			req: {
+				config_type: { t: 0x01, f: 'u32' },
+				token:       { t: 0x10, f: 'u32' },
+				id:          { t: 0x11, f: { n: 'u8', of: 'u8' } },
+			},
+			resp: {},
+		},
+		// "Get Config" 0x30: reads a stored config back, one frame per
+		// request. NOT in libqmi 1.38; from the Qualcomm IDL
+		// (persistent_device_configuration_v01, QMI_PDC_GET_CONFIG; the
+		// OnePlus 8T's libqmiservices.so has the same ids and widths): req
+		// 0x01 config type u32, 0x10 token u32, 0x11 config id (u8-counted,
+		// max 124), 0x12 subscription u32, 0x13 frame index u32; ind 0x01
+		// error u16, 0x10 token, 0x11 frame index (0xFFFFFFFF = the last),
+		// 0x12 the frame (u16-counted, max 32768) (docs/qmi-beyond-libqmi.md).
+		GET_CONFIG: {
+			id: 0x0030,
+			req: {
+				config_type: { t: 0x01, f: 'u32' },
+				token:       { t: 0x10, f: 'u32' },
+				id:          { t: 0x11, f: { n: 'u8', of: 'u8' } },
+				sub:         { t: 0x12, f: 'u32' },
+				frame:       { t: 0x13, f: 'u32' },
+			},
+			resp: {},
+		},
+		GET_CONFIG_IND: {
+			id: 0x0030,
+			ind: {
+				result: { t: 0x01, f: 'u16' },
+				token:  { t: 0x10, f: 'u32' },
+				frame:  { t: 0x11, f: 'u32' },
+				data:   { t: 0x12, f: { len: 'u16', data: 'bytes' } },
+			},
+		},
+		DELETE_CONFIG_IND: {
+			id: 0x0025,
+			ind: {
+				result: { t: 0x01, f: 'u16' },
+				token:  { t: 0x10, f: 'u32' },
+			},
+		},
 	},
 };
 
@@ -633,6 +683,8 @@ function create(deps)
 
 		cl.on('LOAD_CONFIG_IND', deliver);
 		cl.on('ACTIVATE_CONFIG_IND', deliver);
+		cl.on('DELETE_CONFIG_IND', deliver);
+		cl.on('GET_CONFIG_IND', deliver);
 
 		let close = () => {
 			for (let k, w in waits)
@@ -929,6 +981,81 @@ function create(deps)
 						});
 					};
 					send();
+				});
+			},
+
+			// Read a stored carrier config back into a file (PDC Get Config,
+			// frame by frame). args: { id (hex), path }. The file's SHA-1 is
+			// then the id again: that is the check.
+			mbn_read: (ref, ext, args, cb) => {
+				let id = args?.id, path = args?.path;
+
+				if (type(id) != 'string' || !match(id, /^([0-9a-fA-F][0-9a-fA-F])+$/))
+					return cb({ error: 'invalid_id' });
+				if (type(path) != 'string' || substr(path, 0, 1) != '/')
+					return cb({ error: 'invalid_path' });
+				pdc_open(ref, (err, p) => {
+					if (err)
+						return cb(err);
+					let bytes = map(split(hex_to_bin(id), ''), (c) => ord(c));
+					let parts = [], size = 0, next;
+					let fin = (e, r) => {
+						p.close();
+						log(e ? 'warn' : 'info', sprintf('ims %s: mbn read %s: %s', ref, id,
+							e ? sprintf('%J after %d frames', e, length(parts)) : sprintf('%d bytes', size)));
+						e ? cb({ ...e, frames: length(parts) }) : cb(null, r);
+					};
+					let req = { config_type: PDC_TYPE_SOFTWARE };
+					if (args.sub != null)
+						req.sub = +args.sub;
+					else
+						req.id = bytes;
+					next = () => p.ask('GET_CONFIG', { ...req, frame: length(parts) }, 10000, (e, d) => {
+						log('debug', sprintf('ims %s: mbn read frame %d: %s, %d bytes', ref, length(parts),
+							e ? sprintf('%J', e) : sprintf('index %J', d?.frame), length(d?.data?.data ?? '')));
+						if (e)
+							return fin(e);
+						let chunk = d?.data?.data ?? '';
+						if (d?.data?.len != null && d.data.len != length(chunk))
+							return fin({ error: 'short_frame', len: d.data.len, got: length(chunk) });
+						push(parts, chunk);
+						size += length(chunk);
+						if (size > 4 * 1024 * 1024)
+							return fin({ error: 'too_large' });
+						if (d?.frame == 0xffffffff || !length(chunk)) {
+							let data = join('', parts);
+							let sha = require('digest').sha1(data);
+							if (!require('fs').writefile(path, data))
+								return fin({ error: 'write_failed', path: path });
+							return fin(null, { id: id, path: path, size: size, frames: length(parts), sha1: sha, match: sha == lc(id) });
+						}
+						next();
+					});
+					next();
+				});
+			},
+
+			// Remove a loaded carrier config from the modem's store (PDC Delete
+			// Config). args: { id } (hex, as modem_carrier_config lists it). The
+			// caller makes sure it is neither active nor pending: the modem
+			// decides what deleting the running config does. A modem that
+			// sends no indication for it is taken at its acknowledgement.
+			mbn_delete: (ref, ext, args, cb) => {
+				let id = args?.id;
+
+				if (type(id) != 'string' || !match(id, /^([0-9a-fA-F][0-9a-fA-F])+$/))
+					return cb({ error: 'invalid_id' });
+				pdc_open(ref, (err, p) => {
+					if (err)
+						return cb(err);
+					let bytes = map(split(hex_to_bin(id), ''), (c) => ord(c));
+					p.ask('DELETE_CONFIG', { config_type: PDC_TYPE_SOFTWARE, id: bytes }, 5000, (e) => {
+						p.close();
+						log(e ? 'warn' : 'info', sprintf('ims %s: mbn delete %s: %s', ref, id, e ? sprintf('%J', e) : 'ok'));
+						if (e?.error == 'pdc_timeout')
+							return cb(null, { id: id, indication: false });
+						e ? cb(e) : cb(null, { id: id, indication: true });
+					});
 				});
 			},
 

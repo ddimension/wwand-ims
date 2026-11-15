@@ -28,13 +28,15 @@ audibly). VoWiFi/strongSwan = phase 2. Details and phases:
 | `ue/secagree.uc` | Security-Client/-Server/-Verify, ESP keys (TS 33.203 Annex I), the four SAs + policies (7.1), apply/remove/reserve over the xfrm module |
 | `src/xfrm/` | C ucode module `wwand_ims_xfrm` (NETLINK_XFRM: alloc_spi, sa_add/del, policy_add/del, error) |
 | `plugins/ims.uc` | wwand plugin, runs **inside the wwand daemon**: IMS state, call control over QMI (IMSA, IMS, NAS, Voice) — the modem-IMS backend. `ubus call wwand modem_plugin '{"modem":…,"plugin":"ims","op":"status\|calls\|dial\|answer\|hangup"}'`; installed at `/usr/share/ucode/wwand/plugins/ims.uc` |
-| `ctl/ims.uc` | `wwandctl ims [modem] check \| fix \| setup`: what the router's own UE needs (VoLTE FGIs, the modem's IMS off, the IMS profile from the MBN) and the router side (IMS PDN, VRF, firewall, sipd line); `files/wwand-ims-setup` is `setup` as a script. Installed at `/usr/share/ucode/wwand/ctl/ims.uc` |
+| `ctl/mcfg.uc` | the MCFG carrier config in an MBN: parse, set an EFS item, repack, renew the segment digests (the signature stays the base's). Installed as `/usr/share/ucode/wwand/ims_mcfg.uc`, used by `wwandctl ims mbn` |
+| `ctl/ims.uc` | `wwandctl ims [modem] check \| fix \| setup \| mbn`: what the router's own UE needs (VoLTE FGIs, the modem's IMS off, the IMS profile from the MBN) and the router side (IMS PDN, VRF, firewall, sipd line); `files/wwand-ims-setup` is `setup` as a script. Installed at `/usr/share/ucode/wwand/ctl/ims.uc` |
 | `sipd/` | `sipd.uc` (entry), `core.uc`, `sip.uc`: SIP registrar + B2BUA for LAN phones or a PBX trunk. Reads `/etc/config/wwand_ims`. Backend `ue` (`ims_modem` option `backend`): `line_ue.uc` (the router's own IMS UE as the line: registration, refresh, MO/MT), `relay.uc` (RTP 1:1 between LAN and the IMS VRF); backend `qmi`: the plugin's call control |
 | `src/mcfg/` | C, MBN (MCFG) inspection; only SHA-2 so far |
 | `files/` | `wwand_ims.config` (the config model / profiles), `wwand-ims-sipd.init` (procd), `ims-network.example` (IMS PDN in its VRF + firewall), `wwand-ims-l3mdev.hotplug` (restores the l3mdev rules netifd flushes), `asterisk-pjsip.example` (sipd as an Asterisk trunk) |
-| `tools/` | `efs-dump.sh` (read-only EFS snapshots), `calltest.sh`, `sipcall.uc`, `eg25-voice.uc`, `diag-trace/` (modem F3/SIP tracing over adb), `ims-register.uc` (the UE spike driver: register, call, answer, echo), `rtp-amrwb2wav.py`, `install-sipd.sh` (lays sipd out for the init script until there is a package) |
+| `tools/` | `efs-dump.sh` (read-only EFS snapshots), `calltest.sh`, `sipcall.uc`, `eg25-voice.uc`, `diag-trace/` (modem F3/SIP tracing over adb), `ims-register.uc` (the UE spike driver: register, call, answer, echo), `rtp-amrwb2wav.py`, `install-sipd.sh`, `qmi-idl-dump.py` (QMI ids and widths from a vendor `libqmiservices.so`), `qmi-libqmi-audit.sh` (every schema id libqmi 1.38 lacks) (lays sipd out for the init script until there is a package) |
 | `research/` | per-device notes and EFS snapshots (`rg650e-245/`, `eg25-rpi/`, `op8t-20261113/`) |
 | `docs/design.md` | design, phases, profile mapping (GDSP), the MBN problem, measurements, open questions (licence!) |
+| `docs/qmi-beyond-libqmi.md` | every QMI id the plugin uses that libqmi 1.38 lacks, with source and measurement; what is still on AT and why |
 
 ucode has **no function hoisting** and a `let f = () => f()` cannot refer
 to itself: declare first (`let f; f = …`). A closure does not see a `let`
@@ -69,11 +71,18 @@ SIM from wwand-rsim must stay up). If this plugin needs something the core
 doesn't offer yet, add a **generic** hook in wwand. Don't put IMS code there.
 
 ## Invariants
-- **QMI messages/TLVs must match libqmi 1.38**
-  (`data/qmi-service-{imsa,ims,voice,nas}.json`, the enums in
-  `qmi-enums-{imsa,nas,voice}.h`), and come from no other source. A wrong id
-  decodes garbage without any error. New decoders get a test with a
-  hand-built wire buffer.
+- **QMI messages/TLVs: libqmi 1.38 first** (recommendation, since
+  2026-11-15 no longer a hard rule): prefer what
+  `data/qmi-service-*.json` and the `qmi-enums-*.h` define. Where libqmi
+  lacks a message or TLV, another source is allowed: the Qualcomm IDL
+  tables in a shipping RIL's vendor libraries (`libqmiservices.so`), the
+  documents under `~/projects/wwand-ims-docs`, observed RIL traffic. A
+  wrong id decodes garbage without any error, so such an id names its
+  source in a code comment, is measured on hardware before it is relied
+  on, and the code keeps a fallback. Every such id is listed in
+  `docs/qmi-beyond-libqmi.md` (the plugin's) or `../wwand-ims-core/docs/
+  qmi-beyond-libqmi.md` (the core's); `tools/qmi-libqmi-audit.sh` finds them.
+  New decoders get a test with a hand-built wire buffer.
 - **EFS/NV is read-only** unless the user explicitly says otherwise. The EFS
   offsets in `research/*/NOTES.md` are hypotheses from diffs. Confirm them
   against official documentation before anything writes. If a test switches

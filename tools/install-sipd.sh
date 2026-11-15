@@ -35,6 +35,7 @@ chmod +x "$dest/etc/init.d/wwand-ims-sipd"
 # `wwandctl ims` (a wwandctl command of this package) and its setup entry
 mkdir -p "$dest/usr/share/ucode/wwand/ctl" "$dest/usr/sbin"
 cp "$top/ctl/ims.uc" "$dest/usr/share/ucode/wwand/ctl/ims.uc"
+cp "$top/ctl/mcfg.uc" "$dest/usr/share/ucode/wwand/ims_mcfg.uc"
 cp "$top/files/wwand-ims-setup" "$dest/usr/sbin/wwand-ims-setup"
 chmod +x "$dest/usr/sbin/wwand-ims-setup"
 echo "installed into $dest"

@@ -11,3 +11,4 @@ tests/ue_call.uc
 research/rg650e-245/call-20261114/
 tests/sipd_line_ue.uc
 tests/ctl_ims.uc
+tests/ims_mcfg.uc
