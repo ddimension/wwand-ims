@@ -1,4 +1,4 @@
-// ue/secagree.uc against the real kernel, through the wwand_ims_xfrm module,
+// ue/secagree.uc against the real kernel, through wwand_io.xfrm,
 // in a user + network namespace of its own (run.sh starts it under
 // `unshare -rn`). Two netns-local addresses on lo stand in for UE and
 // P-CSCF; the SAs and policies are read back with `ip -j xfrm` (the test may
@@ -7,7 +7,7 @@
 
 import { eq, ok, done } from './lib/check.uc';
 import * as SA from 'ue_secagree';
-import * as xfrm from 'wwand_ims_xfrm';
+import { xfrm } from 'wwand_io';	// NETLINK_XFRM binding, now in wwand_io.so
 import * as fs from 'fs';
 
 let CK = hexdec('b40ba9a3c58b2a05bbf0d987b21bf8cb');

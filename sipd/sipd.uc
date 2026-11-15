@@ -151,9 +151,11 @@ let core = null, line = null, relay = null;
 
 if (backend == 'ue') {
 	let xfrm = null;
-	try { xfrm = require('wwand_ims_xfrm'); } catch (e) { xfrm = null; }
+	// the NETLINK_XFRM binding lives in wwand's native module (wwand_io.so,
+	// sub-namespace xfrm); it is on ucode's default /usr/lib/ucode path.
+	try { xfrm = require('wwand_io').xfrm; } catch (e) { xfrm = null; }
 	if (!xfrm) {
-		log('error', 'sipd: backend ue needs the wwand_ims_xfrm module');
+		log('error', 'sipd: backend ue needs wwand_io.xfrm (install/upgrade wwand)');
 		exit(1);
 	}
 	relay = RELAY.create({ socket: socket, uloop: uloop, lan_ip: listen_ip,

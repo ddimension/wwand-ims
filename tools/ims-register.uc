@@ -3,7 +3,7 @@
 // Copyright (C) 2026 André Valentin <avalentin@marcant.net>
 // Phase 1 spike on the router: one IMS registration by the router itself
 // (ue/reg.uc), over the IMS PDN that wwand carries, the USIM through
-// wwand's APDU channel, sec-agree through the wwand_ims_xfrm module.
+// wwand's APDU channel, sec-agree through wwand_io.xfrm.
 //
 //   ucode -L <dir> -L '<dir>/*.so' <dir>/ims-register.uc \
 //       --modem wwmodem0 --iface wwims [--vrf ims] [--family 4|6]
@@ -14,7 +14,7 @@
 //       [--mt-modes plain,rel183 (test: one per incoming call, in turn)]
 //
 // <dir> holds ue_aka.uc, ue_secagree.uc, ue_reg.uc, sipd_sip.uc and
-// wwand_ims_xfrm.so. Every SIP message in and out is printed. After the
+// wwand_io.so (xfrm). Every SIP message in and out is printed. After the
 // 200 the registration is held for --hold seconds (default 30), then it is
 // de-REGISTERed inside the SAs and the SAs are removed. With --call, the
 // number is called once registered (ue/call.uc): cancelled after --ring
@@ -27,7 +27,7 @@
 import * as uloop from 'uloop';
 import * as ubus from 'ubus';
 import * as socket from 'socket';
-import * as xfrm from 'wwand_ims_xfrm';
+import { xfrm } from 'wwand_io';	// NETLINK_XFRM binding, now in wwand_io.so
 import * as REG from 'ue_reg';
 import * as AKA from 'ue_aka';
 import * as CALL from 'ue_call';

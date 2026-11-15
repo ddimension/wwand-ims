@@ -3,7 +3,7 @@
 // IMS security agreement on the UE side: the Security-Client / -Server /
 // -Verify headers (RFC 3329, 3GPP TS 33.203 7.2 and Annex H), the ESP keys
 // from CK/IK (TS 33.203 Annex I) and the four SAs with their policies (TS
-// 33.203 7.1), applied through the wwand_ims_xfrm netlink module.
+// 33.203 7.1), applied through the wwand_io.xfrm netlink module.
 //
 // The xfrm module is passed in, so the host tests can check the plan without
 // a kernel and, in a network namespace of their own, against a real one.

@@ -18,15 +18,11 @@ ln -sfn ../sipd/line_ue.uc "$TESTDIR/sipd_line_ue.uc"
 ln -sfn ../ctl/ims.uc "$TESTDIR/ctl_ims.uc"
 ln -sfn ../ctl/mcfg.uc "$TESTDIR/ims_mcfg.uc"
 
-# the native xfrm module (src/xfrm), built out of tree: under the build
-# project /vol/release/wwand-ims when it exists, else in tests/.build
-if [ -z "$XFRM_BUILD" ]; then
-	if [ -d /vol/release/wwand-ims ]; then
-		XFRM_BUILD=/vol/release/wwand-ims/build-host/xfrm
-	else
-		XFRM_BUILD=$TESTDIR/.build/xfrm
-	fi
-fi
+# wwand's native module wwand_io.so now carries the NETLINK_XFRM binding
+# (sub-namespace xfrm, merged from the old src/xfrm). Built out of tree from
+# $WWAND_SRC/../io. The nstests load it; the unit tests pass a fake xfrm.
+IO_SRC="$WWAND_SRC/../io"
+IO_BUILD=${IO_BUILD:-$TESTDIR/.build/io}
 
 if [ -x "$HOME/.local/bin/ucode" ]; then
 	UCODE="$HOME/.local/bin/ucode"
@@ -37,10 +33,10 @@ else
 	MODPATH="/usr/lib/ucode/*.so"
 fi
 
-if command -v cmake >/dev/null 2>&1; then
-	mkdir -p "$XFRM_BUILD"
-	( cd "$XFRM_BUILD" && { [ -f Makefile ] || cmake -DCMAKE_PREFIX_PATH="$HOME/.local" "$TESTDIR/../src/xfrm" >/dev/null; } &&
-	  make >/dev/null ) || { echo "xfrm module build failed" >&2; exit 1; }
+if command -v cmake >/dev/null 2>&1 && [ -d "$IO_SRC" ]; then
+	mkdir -p "$IO_BUILD"
+	( cd "$IO_BUILD" && cmake -DCMAKE_PREFIX_PATH="$HOME/.local" "$IO_SRC" >/dev/null &&
+	  make >/dev/null ) || { echo "wwand_io module build failed" >&2; exit 1; }
 fi
 
 rc=0
@@ -54,8 +50,8 @@ done
 # possible: no module built, no unprivileged user namespaces, no xfrm_user.
 for t in "$TESTDIR"/nstest_*.uc; do
 	name=$(basename "$t" .uc)
-	if [ ! -f "$XFRM_BUILD/wwand_ims_xfrm.so" ]; then
-		echo "$name: SKIPPED (no wwand_ims_xfrm.so in $XFRM_BUILD)"
+	if [ ! -f "$IO_BUILD/wwand_io.so" ]; then
+		echo "$name: SKIPPED (no wwand_io.so in $IO_BUILD)"
 		continue
 	fi
 	if ! unshare -rn sh -c 'ip xfrm state >/dev/null 2>&1'; then
@@ -63,7 +59,7 @@ for t in "$TESTDIR"/nstest_*.uc; do
 		continue
 	fi
 	out=$(cd "$TESTDIR" && unshare -rn sh -c 'ip link set lo up; ip addr add 192.0.2.1/32 dev lo; ip addr add 192.0.2.2/32 dev lo; ip addr add 2001:db8::1/128 dev lo nodad; ip addr add 2001:db8::2/128 dev lo nodad; exec "$@"' sh \
-		"$UCODE" -L "$XFRM_BUILD/*.so" -L "$MODPATH" -L "$TESTDIR/*.uc" -L "$TESTDIR/wwand/*.uc" -L "$TESTDIR/*" "$t" 2>&1)
+		"$UCODE" -L "$IO_BUILD/*.so" -L "$MODPATH" -L "$TESTDIR/*.uc" -L "$TESTDIR/wwand/*.uc" -L "$TESTDIR/*" "$t" 2>&1)
 	echo "$name: $(echo "$out" | tail -1 | sed 's/^(null): //')"
 	echo "$out" | grep -q ' 0 failures$' || { echo "$out"; rc=1; }
 done

@@ -9,7 +9,7 @@ USE_PROCD=1
 
 start_service() {
 	procd_open_instance
-	procd_set_param command /usr/bin/ucode -L /usr/share/wwand-ims -L '/usr/share/wwand-ims/*.so' \
+	procd_set_param command /usr/bin/ucode -L /usr/share/wwand-ims -L '/usr/lib/ucode/*.so' \
 		/usr/share/wwand-ims/sipd.uc
 	# the UE retries its registration itself; a crash is restarted for ever
 	procd_set_param respawn 300 10 0
