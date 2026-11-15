@@ -47,13 +47,16 @@ bytes) lives inside the value, so never return that pointer from a helper
 whose local holds `v` (copy it, see `field_str` in `src/xfrm`).
 
 ## wwand core work
-Core changes go into **`../wwand-ims-core`**, a git worktree of `../wwand`
-on the branch `ims-pcscf` (since 2026-11-14). A colleague works in
-`../wwand` itself: never edit, stage or commit there. Bring the branch
-up to date with `git merge --ff-only main` (or rebase). Commits land on
-`main` only when the user asks. Run the tests here against it with
-`WWAND_SRC=../wwand-ims-core/src-ucode sh tests/run.sh`, and hwtest with
-`hwtest/run.sh -r ../wwand-ims-core` (or a `git archive` of a commit).
+Core changes go into **`../wwand-ims-core`**, a git worktree of `../wwand`.
+The old `ims-pcscf` branch was collapsed into `main` and deleted (2026-11-15),
+so this worktree now sits on a **detached HEAD at `main`'s tip** (it cannot
+hold `main` itself — the colleague's `../wwand` has it). A colleague works in
+`../wwand` itself: never edit, stage or commit there. Keep current with
+`git fetch && git checkout --detach origin/main`. Commits land on `main` only
+when the user asks: commit on the detached HEAD and `git push origin HEAD:main`
+(fast-forward), or make a short-lived branch for the change. Run the tests here
+against it with `WWAND_SRC=../wwand-ims-core/src-ucode sh tests/run.sh`, and
+hwtest with `hwtest/run.sh -r ../wwand-ims-core` (or a `git archive` of a commit).
 
 ## Build project
 `/vol/release/wwand-ims/` (README there): out-of-tree builds, host and
