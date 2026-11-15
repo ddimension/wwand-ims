@@ -23,6 +23,28 @@ import * as uloop from 'uloop';
 import * as ubus from 'ubus';
 import * as fs from 'fs';
 
+// Our own IMS UE runs in sipd (backend 'ue', sipd/line_ue.uc), not in this
+// daemon. It broadcasts its state on the ubus event `wwand.ims.ue`; create()
+// caches the latest per modem and status() renders it, so our registration
+// shows next to the modem's in `wwandctl status`.
+const UE_EVENT = 'wwand.ims.ue';
+
+// render a cached sipd UE report (the event payload) into a status row
+function ue_status_row(j)
+{
+	if (type(j) != 'object')
+		return null;
+	let num = match(j.impu ?? '', /sip:(\+?[0-9]+)@/)?.[1];
+	let active = +(j.calls ?? 0);
+	let text = (j.state == 'registered')
+		? sprintf('registered%s%s%s', num ? ' ' + num : '',
+		          j.pcscf ? ' via ' + j.pcscf : '',
+		          active ? sprintf(', %d call(s)', active) : '')
+		: (j.state ?? 'down');
+	return { label: 'IMS UE', text: text,
+	         level: (j.state == 'registered') ? 'ok' : 'warn' };
+}
+
 // ---- schemas (libqmi 1.38)---------------------------------------------
 
 // IMSA, service 0x21
@@ -452,6 +474,29 @@ function create(deps)
 		}
 	};
 
+	// sipd's own IMS UE (backend 'ue') reports its state on `wwand.ims.ue`; keep
+	// the latest per modem, with the local arrival time so a gone sipd ages out.
+	// note_ue is also the test seam (tests have no bus, so they feed it directly).
+	let ue_cache = {};
+	let note_ue = (data) => {
+		if (type(data) == 'object' && data.modem != null)
+			ue_cache[data.modem] = { at: time(), data: data };
+	};
+	let ue_report = (ref) => {
+		let e = ue_cache[ref];
+		if (!e || (time() - e.at) > 30)	// no heartbeat for 30 s: sipd is gone
+			return null;
+		return ue_status_row(e.data);
+	};
+	try {
+		if (!bus)
+			bus = ubus.connect();
+		bus?.listener(UE_EVENT, (t, data) => note_ue(data));
+	}
+	catch (e) {
+		bus = null;
+	}
+
 	let state_of = (ref) => {
 		if (!st[ref])
 			st[ref] = { calls: [], waiters: [] };
@@ -722,6 +767,8 @@ function create(deps)
 	});
 
 	return {
+		// test seam: feed a sipd UE report as if it arrived on `wwand.ims.ue`
+		report_ue: note_ue,
 		// Keeps the clients open, so the indications (and with them the
 		// wwand.ims.* events sipd rings phones on) run from the daemon start
 		// and come back after a modem reset, without anyone calling an op.
@@ -767,19 +814,30 @@ function create(deps)
 
 		status: (ref) => {
 			let s = st[ref];
+			let rows = [];
 
-			if (!s?.reg)
-				return null;
+			// our own UE (sipd backend 'ue'), if it is running on this modem
+			let ue = ue_report(ref);
+			if (ue)
+				push(rows, ue);
 
-			let reg = name_of(REG_STATUS, s.reg.status) ?? '?';
-			let voice = name_of(SERVICE, s.services?.voice);
-			let calls = filter(s.calls ?? [], (c) => c.state != 'end');
+			// the modem's own IMS stack, when it is on (off in the UE design)
+			if (s?.reg) {
+				let reg = name_of(REG_STATUS, s.reg.status) ?? '?';
+				let voice = name_of(SERVICE, s.services?.voice);
+				let calls = filter(s.calls ?? [], (c) => c.state != 'end');
 
-			return { label: 'IMS',
-			         text: sprintf('%s%s%s', reg,
-			                       voice ? ', voice ' + voice : '',
-			                       length(calls) ? sprintf(', %d call(s)', length(calls)) : ''),
-			         level: (s.reg.status == 2) ? 'ok' : 'warn' };
+				push(rows, { label: 'IMS',
+				             text: sprintf('%s%s%s', reg,
+				                           voice ? ', voice ' + voice : '',
+				                           length(calls) ? sprintf(', %d call(s)', length(calls)) : ''),
+				             level: (s.reg.status == 2) ? 'ok' : 'warn' });
+			}
+
+			// one row stays a bare object (what plugins_status and the old
+			// callers expect); only when both the UE and the modem-IMS row are
+			// present do we hand back the array form plugins_status also takes
+			return length(rows) > 1 ? rows : (rows[0] ?? null);
 		},
 
 		ops: {

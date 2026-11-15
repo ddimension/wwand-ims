@@ -22,15 +22,21 @@ import * as fs from 'fs';
 import * as CALL from 'ue_call';
 import * as LINE from 'sipd_line_ue';
 import * as RELAY from 'sipd_relay';
+import * as logmod from 'wwand.log';
 
 let CORE = require('sipd_core');
 
-let level = { debug: 0, info: 1, warn: 2, error: 3 };
+// Log to /dev/log through wwand's own logging seam (wwand_io), so each line
+// carries its real severity and the 'wwand-ims-sipd' ident instead of landing
+// at procd's fixed daemon.err under the generic 'ucode' program name. Falls
+// back to stderr when wwand_io or /dev/log is unavailable (host tests). The
+// `log` callback is handed down to line_ue/core/relay, so this fixes the
+// "ue: ..." lines too.
 let verbose = (ARGV[0] == '-v');
-let log = (lv, msg) => {
-	if (verbose || level[lv] >= 1)
-		warn(sprintf('%s %s\n', lv, msg));
-};
+let _io = null;
+try { _io = require('wwand_io'); } catch (e) { _io = null; }
+logmod.open(_io, { ident: 'wwand-ims-sipd', level: verbose ? 'debug' : 'info' });
+let log = (lv, msg) => logmod.log(lv, '%s', msg);
 
 // ---- configuration ----------------------------------------------------------------
 
@@ -145,6 +151,12 @@ let media = {
 // until their expiry; a PBX would else be unreachable until it registers again)
 const BINDINGS = '/var/run/wwand-ims-sipd.bindings';
 
+// the UE line's state for `wwandctl status`: the 'ue' backend broadcasts it on
+// the ubus event `wwand.ims.ue` (the ims plugin listens and turns the latest
+// into a status row). A heartbeat keeps the plugin's view fresh; the plugin
+// ages a report out on its own if the heartbeats stop.
+const UE_EVENT = 'wwand.ims.ue';
+
 // ---- the UE line (backend 'ue') -------------------------------------------------------------
 
 let core = null, line = null, relay = null;
@@ -212,8 +224,21 @@ let restored = core.restore(saved);
 if (restored)
 	log('info', sprintf('sipd: %d registration(s) restored from %s', restored, BINDINGS));
 
-if (line)
+// publish the UE line's state so `wwandctl status` (the ims plugin) can show it
+let emit_ue_status = (state) => {
+	if (!line)
+		return;
+	let s = (state != null) ? { state: state } : line.status();
+	try { bus.event(UE_EVENT, { modem: modem, backend: backend, updated: time(), ...s }); }
+	catch (e) {}
+};
+
+if (line) {
+	let ue_tick;
+	ue_tick = () => { emit_ue_status(); uloop.timer(5000, ue_tick); };
 	line.start();
+	ue_tick();
+}
 else
 	bus.listener('wwand.ims.call', (type, data) => core.on_call_event(data));
 
@@ -224,6 +249,7 @@ let stop = () => {
 		return;
 	stopping = true;
 	log('info', 'sipd: stopping');
+	emit_ue_status('down');	// let the plugin drop the row at once, not on age-out
 	if (!line)
 		return uloop.end();
 	uloop.timer(5000, () => uloop.end());

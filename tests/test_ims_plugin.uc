@@ -146,6 +146,22 @@ eq(st.services.voice, 'unavailable', 'status: voice service');
 eq(st.network.ims_voice, 0, 'status: network ims voice support');
 eq(inst.status('m0').text, 'registered, voice unavailable', 'status row from the cache');
 
+// a sipd UE report (wwand.ims.ue) adds our own registration as a second row
+inst.report_ue({ modem: 'm0', backend: 'ue', state: 'registered',
+                 impu: 'sip:+4915550000001@ims.mnc002.mcc262.3gppnetwork.org',
+                 pcscf: '2a01:8f0:400:955::5', calls: 1 });
+let rows = inst.status('m0');
+eq(type(rows), 'array', 'UE present: status returns both rows as an array');
+eq(rows[0], { label: 'IMS UE', text: 'registered +4915550000001 via 2a01:8f0:400:955::5, 1 call(s)',
+              level: 'ok' }, 'UE row: number, P-CSCF and active calls');
+eq(rows[1].label, 'IMS', 'the modem-IMS row is kept as the second row');
+// a UE report for another modem does not show on this one
+inst.report_ue({ modem: 'mX', state: 'registered' });
+eq(length(inst.status('m0')), 2, 'a UE report for another modem is not mixed in');
+// a de-registered UE still shows, so the drop is visible
+inst.report_ue({ modem: 'm0', state: 'down' });
+eq(inst.status('m0')[0], { label: 'IMS UE', text: 'down', level: 'warn' }, 'UE row: down is shown, not hidden');
+
 // indications become ubus events for the SIP side
 handlers.ALL_CALL_STATUS_IND({ calls: [ { id: 2, state: 2, type: 0, direction: 2, mode: 4, mpty: 0, als: 0 } ],
                                remote: [ { id: 2, pi: 0, number: '+4930123' } ] });
