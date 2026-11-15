@@ -234,6 +234,17 @@ function at(ctx, modem, cmd)
 // reset. Never dies: on a modem that answers neither, the caller continues.
 // `modem_ims` is the current AT+QCFG value (null if unknown). Returns
 // { via: [...], reset, already_at }.
+function is_quectel(m)
+{
+	return match(lc(m?.manufacturer ?? m?.vendor ?? ''), /quectel/) != null ||
+	       match(m?.model ?? '', /^(RG|RM|EG|EC|EM|BG|AG)[0-9]/) != null;
+}
+
+function plugin(modem, op, args)
+{
+	return try_call('modem_plugin', { modem: modem, plugin: 'ims', op: op, args: args ?? {} });
+}
+
 function disable_modem_ims(ctx, modem, m, modem_ims)
 {
 	let via = [], reset = false;
@@ -273,12 +284,6 @@ function enable_fgi(ctx, modem, m)
 	if (length(fgi_plan(after ?? []).missing))
 		return { error: sprintf('the FGI list did not take: %s', join(':', after ?? [])), before: before };
 	return { via: 'at', reset: true, missing: p.missing, before: before, after: after };
-}
-
-function is_quectel(m)
-{
-	return match(lc(m?.manufacturer ?? m?.vendor ?? ''), /quectel/) != null ||
-	       match(m?.model ?? '', /^(RG|RM|EG|EC|EM|BG|AG)[0-9]/) != null;
 }
 
 // the stored profiles: QMI (modem_profiles) where wwand has it, else AT+CGDCONT
@@ -335,11 +340,6 @@ function fgi_merge(have, want)
 {
 	let all = uniq([ ...(have ?? []), ...(want ?? []) ]);
 	return sort(filter(all, (f) => f >= 1 && f <= 32), (a, b) => a - b);
-}
-
-function plugin(modem, op, args)
-{
-	return try_call('modem_plugin', { modem: modem, plugin: 'ims', op: op, args: args ?? {} });
 }
 
 function configs(modem)
@@ -745,7 +745,7 @@ function discover_pcscf(st, iface)
 function cmd_call(ctx, modem, m, st, args)
 {
 	let o = { number: null, talk: 12, ring: 30, hold: null, echo: 1, pcscf: null,
-	          iface: null, vrf: null, mnc_len: null };
+	          iface: null, vrf: null, mnc_len: null, precond: null };
 	for (let i = 0; i < length(args); i++) {
 		switch (args[i]) {
 		case '--talk':    o.talk = +args[++i]; break;
@@ -756,6 +756,9 @@ function cmd_call(ctx, modem, m, st, args)
 		case '--iface':   o.iface = args[++i]; break;
 		case '--vrf':     o.vrf = args[++i]; break;
 		case '--mnc-len': o.mnc_len = +args[++i]; break;
+		// 1 (default, segmented preconditions), 0 (offer QoS already met — the
+		// network does the dedicated bearer on its own, IR.92 §A), or `always`.
+		case '--preconditions': o.precond = args[++i]; break;
 		default:
 			if (substr(args[i], 0, 2) == '--')
 				die(sprintf('unknown option %s', args[i]));
@@ -763,7 +766,7 @@ function cmd_call(ctx, modem, m, st, args)
 		}
 	}
 	if (!o.number)
-		die('usage: wwandctl ims [modem] call <number> [--talk S] [--ring S] [--hold S] [--no-echo] [--pcscf ADDR] [--iface N] [--vrf N]');
+		die('usage: wwandctl ims [modem] call <number> [--talk S] [--ring S] [--hold S] [--no-echo] [--pcscf ADDR] [--iface N] [--vrf N] [--preconditions 1|0|always]');
 	if (!fs.stat(UE_DRIVER))
 		die(sprintf('%s not installed (it ships with wwand-ims)', UE_DRIVER));
 
@@ -782,6 +785,7 @@ function cmd_call(ctx, modem, m, st, args)
 	if (vrf)          push(argv, '--vrf', vrf);
 	if (mnc)          push(argv, '--mnc-len', sprintf('%d', mnc));
 	if (o.hold != null) push(argv, '--hold', sprintf('%d', o.hold));
+	if (o.precond != null) push(argv, '--preconditions', o.precond);
 
 	printf('calling %s through %s (iface %s, P-CSCF %s%s)\n', o.number, modem, iface, pcscf,
 	       o.echo ? ', echo on' : '');

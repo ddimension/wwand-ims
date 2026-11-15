@@ -35,6 +35,11 @@ export function create(o)
 			s.close();
 			return null;
 		}
+		// IP_FREEBIND on the VRF (IMS) leg: bind to the cellular /32 even before
+		// the kernel sees it as local (see line_ue.uc / the l3mdev hotplug).
+		if (vrf)
+			s.setopt(fam == socket.AF_INET6 ? socket.IPPROTO_IPV6 : socket.IPPROTO_IP,
+				fam == socket.AF_INET6 ? socket.IPV6_FREEBIND : socket.IP_FREEBIND, 1);
 		if (!s.bind({ address: addr, port: port })) {
 			s.close();
 			return null;

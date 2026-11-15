@@ -256,6 +256,11 @@ export function create(o)
 
 	let open_transport = (env, pair) => {
 		let AF = (env.fam == 6) ? socket.AF_INET6 : socket.AF_INET;
+		// IP_FREEBIND: bind() to our cellular /32 succeeds even before the kernel
+		// sees it as local (fresh attach, before the l3mdev hotplug re-asserts the
+		// VRF `local` route). Per-socket, no net.ipv4.ip_nonlocal_bind reliance.
+		let freebind = (sk) => sk?.setopt(env.fam == 6 ? socket.IPPROTO_IPV6 : socket.IPPROTO_IP,
+			env.fam == 6 ? socket.IPV6_FREEBIND : socket.IP_FREEBIND, 1);
 		let t = { socks: {}, tcp: null, handles: [], tcp_by_callid: {}, conns: [] };
 		// a failure closes what was opened so far: a socket left bound would
 		// make every retry fail on its port
@@ -272,6 +277,7 @@ export function create(o)
 				return fail(null, 'socket');
 			if (o.vrf && !s.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, o.vrf))
 				return fail(s, sprintf('bind to VRF %s', o.vrf));
+			freebind(s);
 			s.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
 			if (!s.bind({ address: env.ue_addr, port: port }))
 				return fail(s, sprintf('bind %s port %d', env.ue_addr, port));
@@ -280,6 +286,7 @@ export function create(o)
 		let l = socket.create(AF, socket.SOCK_STREAM);
 		if (l && o.vrf)
 			l.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, o.vrf);
+		freebind(l);
 		l?.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
 		if (l && l.bind({ address: env.ue_addr, port: pair[1] }) && l.listen(4))
 			t.tcp = l;

@@ -11,3 +11,31 @@ for f in -4 -6; do
 	ip $f rule show pref 1000 | grep -q l3mdev ||
 		ip $f rule add pref 1000 l3mdev protocol kernel
 done
+
+# Restore VRF-local delivery for the cellular /32 the UE binds to.
+#
+# When an IPv4 /32 address sits on a VRF slave, netifd adds a
+# `<addr> dev <slave> proto static scope link` host route into the VRF table.
+# In a VRF the kernel keeps the *local* delivery route in that same table, so
+# netifd's unicast host route displaces it. The symptom is nasty and silent:
+# the address is no longer recognised as local, so bind() to it fails (unless
+# net.ipv4.ip_nonlocal_bind=1) and, worse, inbound packets to it are matched
+# as unicast-to-forward and dropped at the IP layer before UDP — tcpdump shows
+# them on the wire and even on the VRF master, but no socket ever receives them
+# and no counter moves. The IMS UE (router-as-UE) hits exactly this: the REGISTER
+# egresses, the P-CSCF's 401 comes back on the wire, and the UE times out
+# "unprotected". HW-proven on the GDSP IoT SIM (2026-11-15), RG650E/Chateau.
+# IPv6 is unaffected (netifd adds no such host route for a /128).
+#
+# Re-assert `local <addr>` for every global IPv4 address on each VRF slave.
+# Idempotent (route replace), dynamic-safe (reads the current address), and it
+# removes the need for the ip_nonlocal_bind / udp_l3mdev_accept crutches.
+for vrf in $(ip -o link show type vrf 2>/dev/null | sed 's/^[0-9]*: \([^:@]*\).*/\1/'); do
+	tbl=$(ip -d link show "$vrf" 2>/dev/null | sed -n 's/.*vrf table \([0-9]*\).*/\1/p')
+	[ -n "$tbl" ] || continue
+	for dev in $(ip -o link show master "$vrf" 2>/dev/null | sed 's/^[0-9]*: \([^:@]*\).*/\1/'); do
+		ip -4 -o addr show dev "$dev" scope global 2>/dev/null | while read -r _ _ _ cidr _; do
+			ip route replace local "${cidr%/*}" dev "$dev" table "$tbl" 2>/dev/null
+		done
+	done
+done

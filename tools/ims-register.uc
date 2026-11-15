@@ -103,6 +103,12 @@ if (!ue_addr || !pcscf || !m.imsi) {
 // ---- sockets: our protected client and server port, in the IMS VRF ----------------
 
 let AF = (family == 6) ? socket.AF_INET6 : socket.AF_INET;
+// IP_FREEBIND: let bind() to our cellular /32 succeed even if the kernel does
+// not (yet) see it as local — e.g. right after a fresh attach, before the
+// l3mdev hotplug re-asserts the VRF `local` route. Per-socket, so no reliance
+// on the net.ipv4.ip_nonlocal_bind sysctl.
+let freebind = (sk) => sk.setopt(family == 6 ? socket.IPPROTO_IPV6 : socket.IPPROTO_IP,
+	family == 6 ? socket.IPV6_FREEBIND : socket.IP_FREEBIND, 1);
 let socks = {};
 
 for (let port in [ opt.port_c, opt.port_s ]) {
@@ -111,6 +117,7 @@ for (let port in [ opt.port_c, opt.port_s ]) {
 		warn(sprintf('bind to VRF %s: %s\n', opt.vrf, socket.error()));
 		exit(1);
 	}
+	freebind(s);
 	s.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
 	if (!s.bind({ address: ue_addr, port: port })) {
 		warn(sprintf('bind %s port %d: %s\n', ue_addr, port, socket.error()));
@@ -126,6 +133,7 @@ if (opt.call || opt.answer != null) {
 	rtp.sock = socket.create(AF, socket.SOCK_DGRAM);
 	if (opt.vrf)
 		rtp.sock.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, opt.vrf);
+	freebind(rtp.sock);
 	if (!rtp.sock.bind({ address: ue_addr, port: opt.rtp_port })) {
 		warn(sprintf('bind RTP port %d: %s\n', opt.rtp_port, socket.error()));
 		exit(1);
