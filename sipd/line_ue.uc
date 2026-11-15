@@ -35,16 +35,13 @@ import * as CALL from 'ue_call';
 
 const PAIRS = [ [ 5062, 5064 ], [ 5072, 5074 ] ];
 
-// an IPv6 address in AT dotted-decimal form (16 numbers) as text
-function v6_dotted(s)
+// a full eight-group IPv6 address ("2a01:8f0:400:955:0:0:0:5", as wwand's
+// codec and the dotted form below give it) in its short form
+function v6_short(a)
 {
-	let n = map(split(s ?? '', '.'), (x) => +x);
-	if (length(n) != 16)
-		return null;
-	let g = [];
-	for (let i = 0; i < 16; i += 2)
-		push(g, sprintf('%x', n[i] * 256 + n[i + 1]));
-	let a = join(':', g);
+	if (length(split(a, ':')) != 8)
+		return a;
+	a = join(':', map(split(a, ':'), (x) => sprintf('%x', hex(x))));
 	// shorten the longest run of zero groups (RFC 5952), enough for logs and binds
 	let best = null;
 	for (let m in [ ':0:0:0:0:0:0:', ':0:0:0:0:0:', ':0:0:0:0:', ':0:0:0:', ':0:0:' ])
@@ -58,6 +55,34 @@ function v6_dotted(s)
 		a = replace(replace(a, /^:([^:])/, '$1'), /([^:]):$/, '$1');
 	}
 	return a;
+}
+
+// an IPv6 address in AT dotted-decimal form (16 numbers) as text
+function v6_dotted(s)
+{
+	let n = map(split(s ?? '', '.'), (x) => +x);
+	if (length(n) != 16)
+		return null;
+	let g = [];
+	for (let i = 0; i < 16; i += 2)
+		push(g, sprintf('%x', n[i] * 256 + n[i + 1]));
+	return v6_short(join(':', g));
+}
+
+// the P-CSCF addresses of the IMS PDN as wwand reports them (status
+// contexts.<iface>.ipv6/ipv4.pcscf: QMI WDS Get Current Settings, the IPv6
+// list 0x2E and the IPv4 list 0x23), IPv6 first, short form, no duplicates
+export function pcscf_from_status(ctx)
+{
+	let out = [];
+	for (let l in [ ctx?.ipv6?.pcscf, ctx?.ipv4?.pcscf ])
+		for (let a in (type(l) == 'array') ? l : [])
+			if (type(a) == 'string') {
+				let s = (index(a, ':') >= 0) ? v6_short(a) : a;
+				if (index(out, s) < 0)
+					push(out, s);
+			}
+	return out;
 }
 
 // P-Access-Network-Info from wwand's modem_cells (QMI NAS Get Cell Location
@@ -113,8 +138,8 @@ function at_fields(l)
 	return out;
 }
 
-// the P-CSCF addresses of the IMS PDN from AT+CGCONTRDP (QMI reports only an
-// IPv4 list): +CGCONTRDP: cid,bearer,"apn","addr+mask","gw",dns1,dns2,"pcscf1","pcscf2"
+// the P-CSCF addresses of the IMS PDN from AT+CGCONTRDP, for a wwand that does
+// not report them (a core without the IPv6 list): +CGCONTRDP: cid,bearer,"apn","addr+mask","gw",dns1,dns2,"pcscf1","pcscf2"
 export function pcscf_from_cgcontrdp(lines, apn)
 {
 	let out = [];
@@ -195,12 +220,11 @@ export function create(o)
 				v6 = a.address;
 		let v4 = ifst['ipv4-address']?.[0]?.address;
 
-		let pcscf = o.pcscf ? [ o.pcscf ] : null;
-		if (!pcscf) {
+		// a fixed one from the config, else QMI through wwand, else AT
+		let pcscf = o.pcscf ? [ o.pcscf ] : pcscf_from_status(ctx);
+		if (!length(pcscf)) {
 			let r = at('AT+CGCONTRDP');
 			pcscf = pcscf_from_cgcontrdp(r?.response, o.apn ?? ctx.apn ?? 'ims');
-			if (!length(pcscf))
-				pcscf = ctx.ipv6?.pcscf ?? ctx.ipv4?.pcscf ?? [];
 		}
 		let six = filter(pcscf, (a) => index(a, ':') >= 0);
 		let fam = (v6 && length(six)) ? 6 : 4;
