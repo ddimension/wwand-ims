@@ -7,8 +7,9 @@ tests/ue_secagree.uc
 tests/.build/
 tests/ue_reg.uc
 tests/ue_call.uc
-# call captures (pcap with ESP keys, diag traces, audio): large, kept out of git
-research/rg650e-245/call-20261114/
+# per-device research (notes with SIM identifiers, traces, EFS snapshots,
+# vendor IDL dumps): local only, never published
+/research/
 tests/sipd_line_ue.uc
 tests/ctl_ims.uc
 tests/ims_mcfg.uc

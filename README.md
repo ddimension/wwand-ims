@@ -20,7 +20,7 @@ registration; `wwandctl ims call <number>` places a test call.
 The alternative **modem-IMS backend** (`plugins/ims.uc`, backend `qmi`) drives
 the module's own IMS over QMI; it is why the plugin exists, but on the RG650E
 the module refuses every outgoing call internally — hence the router-UE
-direction. Details and the per-device findings: `research/`.
+direction. Details: `docs/design.md`. (The per-device research notes are kept outside the published repository.)
 
 ## The idea in one paragraph
 

@@ -34,7 +34,7 @@ audibly). VoWiFi/strongSwan = phase 2. Details and phases:
 | `src/mcfg/` | C, MBN (MCFG) inspection; only SHA-2 so far |
 | `files/` | `wwand_ims.config` (the config model / profiles), `wwand-ims-sipd.init` (procd), `ims-network.example` (IMS PDN in its VRF + firewall), `wwand-ims-l3mdev.hotplug` (restores the l3mdev rules netifd flushes), `asterisk-pjsip.example` (sipd as an Asterisk trunk) |
 | `tools/` | `efs-dump.sh` (read-only EFS snapshots), `calltest.sh`, `sipcall.uc`, `eg25-voice.uc`, `diag-trace/` (modem F3/SIP tracing over adb), `ims-register.uc` (the UE spike driver: register, call, answer, echo), `rtp-amrwb2wav.py`, `install-sipd.sh`, `qmi-idl-dump.py` (QMI ids and widths from a vendor `libqmiservices.so`), `qmi-libqmi-audit.sh` (every schema id libqmi 1.38 lacks) (lays sipd out for the init script until there is a package) |
-| `research/` | per-device notes and EFS snapshots (`rg650e-245/`, `eg25-rpi/`, `op8t-20261113/`) |
+| `research/` | per-device notes and EFS snapshots (`rg650e-245/`, `eg25-rpi/`, `op8t-20261113/`). **Local only, in `.gitignore`**: it holds SIM identifiers, traces and vendor material and is never committed (removed from the history 2026-11-15). Real IMSIs, ICCIDs, phone numbers and device serials stay out of code, tests and docs as well |
 | `docs/design.md` | design, phases, profile mapping (GDSP), the MBN problem, measurements, open questions (licence!) |
 | `docs/qmi-beyond-libqmi.md` | every QMI id the plugin uses that libqmi 1.38 lacks, with source and measurement; what is still on AT and why |
 
