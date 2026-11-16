@@ -5,7 +5,14 @@
 # policy rules on every restart, and nothing brings them back: sockets bound
 # to the IMS VRF then route only through netifd's `from <addr>` rules
 # (wwand docs/vrf.md). Re-add them on any ifup while a VRF exists.
-[ "$ACTION" = ifup ] || exit 0
+#
+# ifupdate as well: wwand renews a connection IN PLACE (a redial after its own
+# restart, a reconnect inside the hold) and netifd then reports the new
+# address as ifupdate, never as ifup. Handled on ifup only, the new /32 kept
+# netifd's unicast host route and the old one its `local` — bind() answered
+# "Address not available" until someone ran ifup (HW, RG650E/Chateau,
+# 2026-11-16, twice).
+case "$ACTION" in ifup|ifupdate) ;; *) exit 0 ;; esac
 ip link show type vrf 2>/dev/null | grep -q . || exit 0
 for f in -4 -6; do
 	ip $f rule show pref 1000 | grep -q l3mdev ||
@@ -34,8 +41,17 @@ for vrf in $(ip -o link show type vrf 2>/dev/null | sed 's/^[0-9]*: \([^:@]*\).*
 	tbl=$(ip -d link show "$vrf" 2>/dev/null | sed -n 's/.*vrf table \([0-9]*\).*/\1/p')
 	[ -n "$tbl" ] || continue
 	for dev in $(ip -o link show master "$vrf" 2>/dev/null | sed 's/^[0-9]*: \([^:@]*\).*/\1/'); do
-		ip -4 -o addr show dev "$dev" scope global 2>/dev/null | while read -r _ _ _ cidr _; do
-			ip route replace local "${cidr%/*}" dev "$dev" table "$tbl" 2>/dev/null
+		addrs=$(ip -4 -o addr show dev "$dev" scope global 2>/dev/null | while read -r _ _ _ cidr _; do
+			echo "${cidr%/*}"
+		done)
+		for a in $addrs; do
+			ip route replace local "$a" dev "$dev" table "$tbl" 2>/dev/null
+		done
+		# ...and drop the `local` of an address that left the device: the
+		# kernel removes its own, but not the one replaced in here, and a
+		# packet for the previous /32 would still be delivered locally
+		ip -4 route show table "$tbl" type local dev "$dev" 2>/dev/null | while read -r _ a _; do
+			case " $(echo $addrs) " in *" $a "*) ;; *) ip route del local "$a" dev "$dev" table "$tbl" 2>/dev/null ;; esac
 		done
 	done
 done
