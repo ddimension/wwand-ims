@@ -105,6 +105,17 @@ unprivileged user namespaces or `xfrm_user` are missing. It symlinks `tests/wwan
 wwand codec or plugin API can break these tests, so run them after changes
 in `../wwand` as well.
 
+## Releases
+Two lines, as in wwand (since 2026-11-16): `main` develops and carries the
+marker tag `vX.Y.0-dev` of the minor it works on (`v0.2.0-dev`), `stable`
+carries the releases, tagged `vX.Y.Z` there and nowhere else (first:
+`v0.1.0`). A fix reaches stable by `cherry-pick -x` from main, or is made
+there and merged up. The feed (`repository/wwand-ims/Makefile`) pins main on
+its main and a stable tag on its stable, through `scripts/bump-source.sh
+wwand-ims <ref>`. A release needs a wwand that has what the plugin uses:
+v0.1.0 needs wwand 1.9.0 (the xfrm binding in `wwand_io.so`, `option ims`,
+P-CSCF in the status).
+
 ## State
 Hardware status and findings: `research/rg650e-245/NOTES.md` (RG650E on the
 Chateau: IMS registers and voice reports available, but the module refuses
