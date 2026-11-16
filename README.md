@@ -77,8 +77,8 @@ wwand's `main` (see `CLAUDE.md`).
 under their installed names (`build/ucode/wwand-ims/` → `/usr/share/wwand-ims`,
 `build/ucode/wwand/` → `/usr/share/ucode/wwand`) and compiles the ES modules
 and the two programs to bytecode with the given ucode (`-DUCODE_COMPILER=`;
-the feed passes the SDK's). An older ucode that cannot (openwrt-25.12's) gets
-the sources, as does `-DUCODE_PRECOMPILE=OFF`. The require()d scripts (plugin,
+the feed passes the SDK's). A ucode that cannot (older than 2026.07.09, as in
+the openwrt-25.12 images up to 25.12.6) gets the sources, as does `-DUCODE_PRECOMPILE=OFF`. The require()d scripts (plugin,
 `wwandctl ims`, `sipd_core`, `sipd_sip`, `ims_mcfg`) are always source.
 
 ## Licence

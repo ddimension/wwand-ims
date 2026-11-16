@@ -76,8 +76,10 @@ set(IMS_UCODE_UNSHIPPED
 set(IMS_UCODE_EXTERN digest fs socket struct ubus uci uloop wwand_io wwand.log)
 
 # --- capability probe ---------------------------------------------------------
-# An older ucode (openwrt-25.12's has no `-cmodule` and cannot load a bytecode
-# module either) or a missing host ucode does not fail the build: everything
+# An older ucode (2026.01.16, the openwrt-25.12 images up to 25.12.6, has no
+# `-cmodule` and cannot load a bytecode module either; the 25.12 branch has
+# 2026.07.09 since 2026-11-11) or a missing host ucode does not fail the
+# build: everything
 # then ships as source, which runs the same, only without the start-up win.
 set(IMS_BYTECODE OFF)
 if(UCODE_PRECOMPILE AND UCODE_COMPILER)
