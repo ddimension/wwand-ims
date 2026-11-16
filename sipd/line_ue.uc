@@ -5,10 +5,11 @@
 // the registration up, places calls and hands incoming ones to sipd.
 //
 //   let line = LINE.create({ bus, uloop, socket, xfrm, modem, iface, vrf,
-//                            relay, log, on_incoming })
+//                            relay, log, on_incoming, profile_for })
 //   line.start()
 //   line.dial(number, ev, { offer(qos, ver), ims_port }) -> ue/call.uc call, or null
-//   line.status() -> { state, ue_addr, pcscf, impu, expires }
+//   line.status() -> { state, ue_addr, pcscf, impu, expires, profile, reg_event }
+//   line.profile() -> the operator profile's values in use (sipd/profile.uc ue_opts)
 //   line.stop(cb)                         de-REGISTER, SAs and sockets down
 //
 // on_incoming(inc): inc = { call, media (relay.alloc()), number, called, set(ev) };
@@ -26,12 +27,25 @@
 // (new SAs, no clash with the old policies), the old one taken down after
 // the new one stands. Never while a call runs. Any failure, and a new
 // address or P-CSCF on the PDN, start over after `retry` seconds.
+//
+// profile_for({ imsi, iccid }) gives the operator profile's values for the
+// SIM in the modem (asked at every registration: the SIM may have changed);
+// they set the SIP timers, the expiry asked for, the sec-agree algorithms,
+// the User-Agent and whether the UE listens on TCP and subscribes to reg.
+//
+// P-CSCF failover: the PDN names several P-CSCFs; a REGISTER that times out
+// or meets a 5xx moves on to the next of the same address family.
+//
+// reg-event (ue/regevent.uc): each registration subscribes to its own
+// state. "terminated" for our contact starts a new registration,
+// "shortened" brings the refresh forward.
 
 'use strict';
 
 import * as REG from 'ue_reg';
 import * as AKA from 'ue_aka';
 import * as CALL from 'ue_call';
+import * as SUB from 'ue_regevent';
 
 const PAIRS = [ [ 5062, 5064 ], [ 5072, 5074 ] ];
 
@@ -164,6 +178,20 @@ export function pcscf_from_cgcontrdp(lines, apn)
 	return out;
 }
 
+// P-CSCF failover (TS 24.229 5.1.1.2, 5.1.1.4): a REGISTER nobody answered,
+// or answered with a server error, is tried at another P-CSCF. A 4xx is the
+// network's answer about us, not about that P-CSCF.
+export function pcscf_failed(err)
+{
+	return err?.error == 'timeout' || (err?.error == 'status' && (err.status ?? 0) >= 500);
+}
+
+// the P-CSCF for attempt `ix` out of the PDN's list (round robin)
+export function pcscf_pick(list, ix)
+{
+	return length(list) ? list[ix % length(list)] : null;
+}
+
 // the user part (number) of a header's URI: tel:+49..., sip:+49...@...
 function SIP_user(msg, name)
 {
@@ -186,8 +214,11 @@ export function create(o)
 
 	let self = { state: 'down' };
 	let cur = null;           // the registration in use: { reg, res, pair, socks, tcp, env }
+	let attempt = null;       // the one being set up, until it stands or failed
 	let pair_ix = 0;
+	let pcscf_ix = 0;         // which of the PDN's P-CSCFs (moved on by a failure)
 	let fails = 0;
+	let prof = {}, prof_name = false;
 	let calls = {};           // call_id -> call (ours, either direction)
 	let timers = {};
 
@@ -202,6 +233,20 @@ export function create(o)
 	let incoming = null, impu = null;
 
 	// ---- what wwand, netifd and the modem know ------------------------------------
+
+	// the operator profile for the SIM in the modem; said once per change
+	let profile_of = (m) => {
+		let u = o.profile_for?.({ imsi: m.imsi, iccid: m.iccid }) ?? {};
+		if ((u.name ?? null) !== prof_name) {
+			prof_name = u.name ?? null;
+			log('info', prof_name ? sprintf('ue: operator profile %s', prof_name)
+				: 'ue: no operator profile for this SIM; built-in defaults');
+			for (let w in u.warn ?? [])
+				log('warn', sprintf('ue: profile %s: %s', prof_name, w));
+		}
+		prof = u;
+		return u;
+	};
 
 	// light: only what the PDN watch compares (address, P-CSCF), no cell
 	let discover = (light) => {
@@ -221,7 +266,8 @@ export function create(o)
 		let v4 = ifst['ipv4-address']?.[0]?.address;
 
 		// a fixed one from the config, else QMI through wwand, else AT
-		let pcscf = o.pcscf ? [ o.pcscf ] : pcscf_from_status(ctx);
+		let fixed = (type(o.pcscf) == 'array') ? o.pcscf : (o.pcscf ? [ o.pcscf ] : []);
+		let pcscf = length(fixed) ? fixed : pcscf_from_status(ctx);
 		if (!length(pcscf)) {
 			let r = at('AT+CGCONTRDP');
 			pcscf = pcscf_from_cgcontrdp(r?.response, o.apn ?? ctx.apn ?? 'ims');
@@ -229,7 +275,8 @@ export function create(o)
 		let six = filter(pcscf, (a) => index(a, ':') >= 0);
 		let fam = (v6 && length(six)) ? 6 : 4;
 		let ue = (fam == 6) ? v6 : v4;
-		let p = (fam == 6) ? six[0] : filter(pcscf, (a) => index(a, ':') < 0)[0];
+		let cand = (fam == 6) ? six : filter(pcscf, (a) => index(a, ':') < 0);
+		let p = pcscf_pick(cand, pcscf_ix);
 		if (!ue || !p)
 			return { error: sprintf('no UE address or P-CSCF (ipv6 %s, ipv4 %s, P-CSCF %J)', v6 ?? '-', v4 ?? '-', pcscf) };
 
@@ -244,7 +291,7 @@ export function create(o)
 		}
 
 		return { imsi: m.imsi, imei: m.imei, mnc_len: o.mnc_len ?? home_mnc_len(m),
-		         fam: fam, ue_addr: ue, pcscf: p, pani: pani };
+		         fam: fam, ue_addr: ue, pcscf: p, pcscfs: cand, pani: pani, prof: profile_of(m) };
 	};
 
 	// ---- one registration's transport --------------------------------------------
@@ -283,6 +330,9 @@ export function create(o)
 				return fail(s, sprintf('bind %s port %d', env.ue_addr, port));
 			t.socks[sprintf('%d', port)] = s;
 		}
+		// the profile's sip_transport without tcp: no listener
+		if (env.prof?.tcp === false)
+			return t;
 		let l = socket.create(AF, socket.SOCK_STREAM);
 		if (l && o.vrf)
 			l.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, o.vrf);
@@ -343,6 +393,9 @@ export function create(o)
 			ue_addr: env.ue_addr, pcscf_addr: env.pcscf, port_c: pair[0], port_s: pair[1],
 			pani: env.pani, card: AKA.wwand_card(ubus_call, o.modem, o.slot), xfrm: o.xfrm,
 			smsip: false, sa_opts: o.vrf ? {} : null, reqid: 0x1500 + 0x10 * pair_ix,
+			t1: env.prof?.t1, t2: env.prof?.t2, expires: env.prof?.expires,
+			algs: env.prof?.algs, ealgs: env.prof?.ealgs,
+			user_agent: env.prof?.user_agent, pcscf_port: env.prof?.pcscf_port,
 			timer: (ms, fn) => uloop.timer(ms, fn),
 			log: (lvl, msg) => log(lvl == 'notice' ? 'info' : lvl, 'ue: ' + msg),
 			send: send,
@@ -350,6 +403,8 @@ export function create(o)
 
 		let dispatch = (data) => {
 			if (r.reg.on_message(data))
+				return;
+			if (r.sub?.on_message(data))
 				return;
 			let id = callid_of(data);
 			let c = id ? calls[id] : null;
@@ -422,7 +477,10 @@ export function create(o)
 				push(t.handles, h);
 			}, uloop.ULOOP_READ));
 
+		attempt = r;
 		r.reg.start((err, res) => {
+			if (attempt === r)
+				attempt = null;
 			if (err) {
 				r.reg.close();
 				close_transport(t);
@@ -436,6 +494,7 @@ export function create(o)
 	let drop_reg = (r, dereg, cb) => {
 		if (!r)
 			return cb?.();
+		r.sub?.close();
 		let done = () => {
 			close_transport(r.t);
 			cb?.();
@@ -448,7 +507,7 @@ export function create(o)
 
 	// ---- the registration's life ----------------------------------------------------
 
-	let schedule_refresh, register;
+	let schedule_refresh, register, refresh_due, start_sub;
 
 	register = () => {
 		if (self.state == 'stopped')
@@ -471,8 +530,15 @@ export function create(o)
 				// the first retry comes soon: right after a de-REGISTER (a restart)
 				// the network answers the next one with 403 "Wrong response" once
 				// (HW 2026-11-14), and a PBX's calls get 503 meanwhile
-				let wait = (fails++ == 0) ? 5000 : retry;
-				log('warn', sprintf('ue: registration failed: %J; again in %d s', err, wait / 1000));
+				// ... and so does the first try at each other P-CSCF
+				let n = length(env.pcscfs);
+				let moved = pcscf_failed(err) && n > 1;
+				if (moved)
+					pcscf_ix = (pcscf_ix + 1) % n;
+				let wait = (fails == 0 || (moved && fails < n)) ? 5000 : retry;
+				fails++;
+				log('warn', sprintf('ue: registration failed: %J; again in %d s%s', err, wait / 1000,
+					moved ? sprintf(' via P-CSCF %s', pcscf_pick(env.pcscfs, pcscf_ix)) : ''));
 				// a refresh that failed: the old one may still stand
 				self.state = cur ? 'registered' : 'down';
 				if (cur && !busy())
@@ -492,6 +558,7 @@ export function create(o)
 			if (old)
 				drop_reg(old, false);
 			schedule_refresh();
+			start_sub(r);
 		});
 	};
 
@@ -499,7 +566,6 @@ export function create(o)
 
 	// the refresh when it is due; while a call runs it is retried every 30 s
 	// (not rescheduled from the expiry: that would push it past it)
-	let refresh_due;
 	refresh_due = () => {
 		if (busy()) {
 			log('info', 'ue: refresh due, a call is running; again in 30 s');
@@ -514,6 +580,50 @@ export function create(o)
 		set_timer('reg', at_s * 1000, refresh_due);
 	};
 
+	// the network ended our registration (reg-event): a new one from scratch,
+	// once no call runs. "deactivated" asks for it at once (RFC 3680 4.5),
+	// anything else (rejected, probation, ...) waits the retry time.
+	let gone;
+	gone = (r, event) => {
+		if (r !== cur || self.state == 'stopped')
+			return;
+		if (busy())
+			return set_timer('reg', 5000, () => gone(r, event));
+		log('warn', sprintf('ue: the network ended the registration (%s); registering again', event ?? 'no reason'));
+		cur = null;
+		self.state = 'down';
+		drop_reg(r, false, () => set_timer('reg', (event == 'deactivated') ? 1000 : retry, register));
+	};
+
+	start_sub = (r) => {
+		if (r.env.prof?.reg_event === false)
+			return;
+		r.sub = SUB.create({
+			ue_addr: r.env.ue_addr, port_c: r.pair[0], port_s: r.pair[1],
+			pcscf: r.res.pcscf, route: r.res.service_route, impu: impu(),
+			contact_user: r.env.imsi, imei_urn: REG.imei_urn(r.env.imei), pani: r.env.pani,
+			sec_verify: r.reg.server_raw, t1: r.env.prof?.t1, t2: r.env.prof?.t2,
+			user_agent: r.env.prof?.user_agent,
+			timer: (ms, fn) => uloop.timer(ms, fn),
+			log: (lvl, msg) => log(lvl, 'ue: ' + msg),
+			send: r.send,
+			on_event: (what, d) => {
+				// during a refresh the old registration's subscription reports
+				// its own replacement: only the one in use, and only at rest
+				if (r !== cur || self.state != 'registered')
+					return;
+				if (what == 'shortened') {
+					let s = max(int((d.expires ?? 0) / 2), 1);
+					log('info', sprintf('ue: registration shortened to %s s; refresh in %d s', d.expires ?? '?', s));
+					return set_timer('reg', s * 1000, refresh_due);
+				}
+				if (what == 'terminated')
+					gone(r, d.event);
+			},
+		});
+		r.sub.start();
+	};
+
 	// a new address or P-CSCF on the PDN (re-attach), or the PDN gone: start over
 	let watch;
 	watch = () => {
@@ -521,7 +631,8 @@ export function create(o)
 		if (!cur || self.state != 'registered' || busy())
 			return;
 		let env = discover(true);
-		if (env.error || env.ue_addr != cur.env.ue_addr || env.pcscf != cur.env.pcscf) {
+		// the P-CSCF in use no longer among the PDN's counts as a change
+		if (env.error || env.ue_addr != cur.env.ue_addr || index(env.pcscfs, cur.env.pcscf) < 0) {
 			log('warn', sprintf('ue: the IMS PDN changed (%s); registering again',
 				env.error ?? sprintf('%s via %s', env.ue_addr, env.pcscf)));
 			let old = cur;
@@ -556,6 +667,7 @@ export function create(o)
 			pcscf: r.res.pcscf, route: r.res.service_route, impu: impu(),
 			contact_user: r.env.imsi, imei_urn: REG.imei_urn(r.env.imei), pani: r.env.pani,
 			sec_verify: r.reg.server_raw, rtp_port: rtp_port,
+			t1: r.env.prof?.t1, t2: r.env.prof?.t2, user_agent: r.env.prof?.user_agent,
 			timer: (ms, fn) => uloop.timer(ms, fn),
 			log: (lvl, msg) => log(lvl, 'ue: ' + msg),
 			send: r.send, qos_wait: qos_wait,
@@ -564,9 +676,9 @@ export function create(o)
 		return c;
 	};
 
-	// a finished call stays known for 64*T1, so the network's late CANCEL,
+	// a finished call stays known for 64*T1 (64 s without a profile), so the network's late CANCEL,
 	// BYE or retransmission still finds it
-	let forget = (c) => uloop.timer(64000, () => delete calls[c.call_id]);
+	let forget = (c) => uloop.timer(prof.t1 ? 64 * prof.t1 : 64000, () => delete calls[c.call_id]);
 
 	let caller_of = (msg) => {
 		let pai = SIP_user(msg, 'p-asserted-identity') ?? SIP_user(msg, 'from');
@@ -638,7 +750,10 @@ export function create(o)
 	self.status = () => ({
 		state: self.state, ue_addr: cur?.env?.ue_addr, pcscf: cur?.env?.pcscf, impu: impu(),
 		expires: cur?.res?.expires, ports: cur?.pair, calls: length(keys(calls)),
+		profile: prof.name, reg_event: cur?.sub?.state,
 	});
+
+	self.profile = () => prof;
 
 	self.stop = function(cb) {
 		self.state = 'stopped';
@@ -647,6 +762,13 @@ export function create(o)
 		for (let id, c in calls)
 			if (c.state != 'ended')
 				c.hangup();
+		// a registration still being set up: its retransmissions, reserved
+		// SPIs and sockets go as well
+		if (attempt) {
+			attempt.reg.close();
+			close_transport(attempt.t);
+			attempt = null;
+		}
 		let r = cur;
 		cur = null;
 		drop_reg(r, true, () => cb?.());

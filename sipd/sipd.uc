@@ -22,6 +22,7 @@ import * as fs from 'fs';
 import * as CALL from 'ue_call';
 import * as LINE from 'sipd_line_ue';
 import * as RELAY from 'sipd_relay';
+import * as PROFILE from 'sipd_profile';
 import * as logmod from 'wwand.log';
 
 let CORE = require('sipd_core');
@@ -46,6 +47,9 @@ let gw = null, users = {}, modem = null;
 let im = null;
 cur.foreach('wwand_ims', 'sip_gateway', (s) => { gw ??= s; });
 cur.foreach('wwand_ims', 'ims_modem', (s) => { im ??= s; });
+// the operator profiles; the one for the SIM is picked at each registration
+let profiles = [];
+cur.foreach('wwand_ims', 'ims_profile', (s) => { push(profiles, s); });
 cur.foreach('wwand_ims', 'extension', (s) => {
 	if (s.username && s.password) {
 		users[s.username] = { password: s.password };
@@ -172,7 +176,9 @@ if (backend == 'ue') {
 	}
 	relay = RELAY.create({ socket: socket, uloop: uloop, lan_ip: listen_ip,
 		ims_ip: () => line?.ue_addr(), vrf: im.vrf, log: log,
-		base: +(im.rtp_base ?? 40000), span: +(im.rtp_span ?? 200) });
+		base: +(im.rtp_base ?? 40000), span: +(im.rtp_span ?? 200),
+		rtp_timeout: () => line?.profile()?.rtp_timeout,
+		rtcp_timeout: () => line?.profile()?.rtcp_timeout });
 	line = LINE.create({ bus: bus, uloop: uloop, socket: socket, xfrm: xfrm,
 		modem: modem, iface: im.ims_iface ?? 'wwims', vrf: im.vrf,
 		// the APN to find the IMS PDN's line in AT+CGCONTRDP: config, else the
@@ -180,6 +186,7 @@ if (backend == 'ue') {
 		apn: im.ims_apn ?? cur.get('network', im.ims_iface ?? 'wwims', 'apn'),
 		mnc_len: im.mnc_len ? +im.mnc_len : null,
 		pcscf: im.pcscf, relay: relay, log: log,
+		profile_for: (sim) => PROFILE.ue_opts(PROFILE.select(profiles, im.profile, sim)),
 		on_incoming: (inc) => core?.on_line_incoming(inc) });
 }
 

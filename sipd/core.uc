@@ -227,6 +227,22 @@ function create(env)
 		return S.build(sprintf('%s %s SIP/2.0', method, target), hs, '');
 	};
 
+	// the relay heard nothing from one side for too long: the call is dead
+	// for both, whatever SIP still believes
+	let media_dead = (c, side, kind) => {
+		if (call !== c)
+			return;
+		log('warn', sprintf('sipd: call %s: no %s from the %s side, ending it', c.call_id, uc(kind), uc(side)));
+		if (!c.bye_sent) {
+			c.bye_sent = true;
+			send(to_phone(c, 'BYE'), c.addr);
+		}
+		// the call first: the line's 'ended' must not send a second BYE
+		end_call(c, sprintf('no %s from the %s side', uc(kind), uc(side)));
+		hangup_modem(c);
+	};
+	let media_watch = (c) => env.relay.watch?.(c.media, (side, kind) => media_dead(c, side, kind));
+
 	// ---- outgoing over the UE line ------------------------------------------------
 
 	let line_out_event, out_line;
@@ -254,6 +270,7 @@ function create(env)
 		if (ev == 'answered' && c.state != 'up') {
 			c.state = 'up';
 			line_connect(c, c.req.body, d?.body);
+			media_watch(c);
 			c.last = S.response(c.req, 200, 'OK', { to_tag: c.local_tag, headers: [
 				[ 'Contact', our_contact(c.addr) ], [ 'Content-Type', 'application/sdp' ] ] }, lan_sdp_for(c, d?.body));
 			retransmit(c, c.last, c.addr, () => {
@@ -413,6 +430,7 @@ function create(env)
 		}
 		c.state = 'up';
 		line_connect(c, res.body, c.lc.offer, c.lc.answer);
+		media_watch(c);
 		if (!c.lc.accept())
 			c.want_accept = true;    // preconditions still running: on 'incoming'
 	};

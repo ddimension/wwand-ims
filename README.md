@@ -52,10 +52,10 @@ There are two ways to set them, and they are not equal:
 |---|---|---|
 | `ue/aka.uc` | ucode | IMS-AKA: USIM AUTHENTICATE over wwand's APDU channel, Digest AKAv1-MD5, identities from the IMSI |
 | `ue/secagree.uc` | ucode | sec-agree (TS 33.203): headers, ESP keys, the four SAs and their policies, over wwand core's `wwand_io.so` `xfrm` binding |
-| `ue/reg.uc`, `ue/call.uc` | ucode | the UE's registration and one outgoing call (UAC) |
+| `ue/reg.uc`, `ue/call.uc`, `ue/regevent.uc` | ucode | the UE's registration, one call, and its reg-event subscription (the network ending the registration is noticed) |
 | `plugins/ims.uc` | ucode, inside the wwand daemon | the modem-IMS backend: IMS state and call control over QMI |
 | `ctl/ims.uc` | ucode (wwandctl) | `wwandctl ims check\|fix\|setup\|mbn\|call` — prepares the modem and the router |
-| `sipd/` | ucode | SIP registrar + B2BUA; backend `ue` is the router's own IMS UE, backend `qmi` bridges to the plugin |
+| `sipd/` | ucode | SIP registrar + B2BUA; backend `ue` is the router's own IMS UE (operator profile by SIM, P-CSCF failover, RTP relay with a media watchdog), backend `qmi` bridges to the plugin |
 | `src/mcfg/` | C | MBN (MCFG) inspection (SHA-2 so far) |
 | `tools/` | sh, ucode, python | the UE driver (`ims-register.uc`), call tests, EFS snapshots, modem F3 tracing |
 | `files/` | | example config, init script, IMS-PDN network/firewall example, Asterisk example |

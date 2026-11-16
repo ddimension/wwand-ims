@@ -11,10 +11,19 @@
 // AMR(-WB) NO_DATA frame every 20 ms: without uplink RTP the network drops
 // the media after ~13 s (research/rg650e-245/NOTES.md, 2026-11-14).
 //
-//   let r = RELAY.create({ socket, uloop, lan_ip, ims_ip (or a function), vrf, log, base, span })
+// A call whose media dies must not stay up until some SIP event ends it:
+// watch(m, cb) arms a watchdog once the call is established. cb(side, kind)
+// is called once when a side ('lan' or 'ims') sent no RTP for rtp_timeout
+// seconds (default 30; 0: off), or, with rtcp_timeout set (default 0: off,
+// not every phone and network sends RTCP), no RTCP for that long. The
+// caller ends the call. Comfort noise keeps a muted side alive (SID frames).
+//
+//   let r = RELAY.create({ socket, uloop, lan_ip, ims_ip (or a function), vrf, log, base, span,
+//                          rtp_timeout, rtcp_timeout (seconds, or functions), now (ms, tests) })
 //   let m = r.alloc()           -> { id, lan_port, ims_port } or null
 //   r.connect(m, { lan: { address, port }, ims: { address, port }, ims_pt })
 //   r.update(m, far)            a later SDP's far ends
+//   r.watch(m, cb)              cb(side, 'rtp' | 'rtcp') when the media died
 //   r.stop(m)
 
 'use strict';
@@ -26,6 +35,11 @@ export function create(o)
 	let base = o.base ?? 40000, span = o.span ?? 200;
 	let next_id = 0;
 	let all = {};
+	let now = o.now ?? (() => { let c = clock(true); return c[0] * 1000 + int(c[1] / 1000000); });
+	let secs = (v, dflt) => {
+		let x = (type(v) == 'function') ? v() : v;
+		return (x != null) ? +x : dflt;
+	};
 
 	let open = (fam, addr, port, vrf) => {
 		let s = socket.create(fam, socket.SOCK_DGRAM);
@@ -81,7 +95,7 @@ export function create(o)
 			return null;
 		}
 		let m = { id: ++next_id, lan: lan, ims: ims, lan_port: lan.port, ims_port: ims.port,
-		          handles: [], peer: {}, n: { up: 0, down: 0, ka: 0 } };
+		          handles: [], peer: {}, heard: {}, n: { up: 0, down: 0, ka: 0 } };
 		all[sprintf('%d', m.id)] = m;
 		return m;
 	};
@@ -93,6 +107,7 @@ export function create(o)
 			if (!p)
 				return;
 			let back = (key == 'ims') ? 'lan' : 'ims';
+			m.heard[back + count.suffix] = now();
 			// symmetric RTP: the side we receive from is where we send to
 			if (p.address)
 				m.peer[back + count.suffix] = p.address;
@@ -160,11 +175,42 @@ export function create(o)
 			}
 	};
 
+	// the inactivity watchdog, from now on (the call is established)
+	self.watch = function(m, cb) {
+		if (!m || m.stopped || m.wd)
+			return;
+		let rtp = secs(o.rtp_timeout, 30) * 1000, rtcp = secs(o.rtcp_timeout, 0) * 1000;
+		if (rtp <= 0 && rtcp <= 0)
+			return;
+		let t0 = now(), tick;
+		// often enough to be within a second or a quarter of the shorter limit
+		let every = min(1000, max(100, int(min(rtp > 0 ? rtp : rtcp, rtcp > 0 ? rtcp : rtp) / 4)));
+		tick = () => {
+			if (m.stopped)
+				return;
+			let t = now();
+			for (let side in [ 'lan', 'ims' ])
+				for (let k in [ [ '', rtp, 'rtp' ], [ '_rtcp', rtcp, 'rtcp' ] ]) {
+					// silence counts from the last packet, or from the arming
+					let last = max(m.heard[side + k[0]] ?? 0, t0);
+					if (k[1] > 0 && t - last >= k[1]) {
+						m.wd = null;
+						log('warn', sprintf('relay %d: no %s from the %s side for %d s', m.id,
+							uc(k[2]), uc(side), int((t - last) / 1000)));
+						return cb(side, k[2]);
+					}
+				}
+			m.wd = uloop.timer(every, tick);
+		};
+		m.wd = uloop.timer(every, tick);
+	};
+
 	self.stop = function(m) {
 		if (!m || m.stopped)
 			return;
 		m.stopped = true;
 		m.ka?.cancel();
+		m.wd?.cancel();
 		for (let h in m.handles)
 			h.delete();
 		close_pair(m.lan);

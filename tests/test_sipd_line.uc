@@ -51,6 +51,7 @@ let env = {
 			far.ims?.address, far.ims?.port, far.ims_pt)),
 		update: (m, far) => push(m.did, sprintf('update ims %s:%d', far.ims?.address, far.ims?.port)),
 		stop: (m) => push(m.did, 'stop'),
+		watch: (m, cb) => { m.dead = cb; },
 	},
 	sdp: { relay: CALL.sdp_relay, media: CALL.sdp_media },
 	timer: (ms, fn) => {
@@ -274,5 +275,26 @@ eq(clir_dial('clir2@pbx', '"Anonymous" <sip:anonymous@anonymous.invalid>;tag=a2'
 	'CLIR: an anonymous From -> opts.privacy');
 eq(clir_dial('clir3@pbx', '<sip:4952640@10.0.248.22>;tag=a3', [ 'Privacy: none' ]).opts.privacy, false,
 	'no CLIR: Privacy: none and a normal From -> no privacy');
+
+// ---- the relay's watchdog: a call whose media died ------------------------------------
+let wd_call = (cid) => {
+	dial_out(PBX_OFFER, cid);
+	let d = dials[length(dials) - 1];
+	d.ev('answered', { status: 200, body: IMS_ANSWER });
+	return { d: d, m: relays[length(relays) - 1] };
+};
+let wd = wd_call('wd1@pbx');
+ok(type(wd.m.dead) == 'function', 'media: the watchdog is armed when the call is up');
+let n_sent = length(sent);
+wd.m.dead('ims', 'rtp');
+eq([ sent[n_sent]?.msg?.method, length(sent) - n_sent ], [ 'BYE', 1 ], 'media dead: one BYE to the PBX');
+eq(wd.d.lc.did, [ 'hangup' ], 'media dead: the IMS side is hung up');
+eq(wd.m.did[length(wd.m.did) - 1], 'stop', 'media dead: the relay is stopped');
+wd.m.dead('lan', 'rtp');
+eq(length(sent) - n_sent, 1, 'media dead: a late report for an ended call does nothing');
+// the line is free again
+let wd2 = wd_call('wd2@pbx');
+eq(last().status, 200, 'media dead: the next call goes through');
+wd2.d.ev('ended', { reason: 'bye' });
 
 done();

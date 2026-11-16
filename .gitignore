@@ -13,3 +13,6 @@ tests/ue_call.uc
 tests/sipd_line_ue.uc
 tests/ctl_ims.uc
 tests/ims_mcfg.uc
+tests/sipd_relay.uc
+tests/sipd_profile.uc
+tests/ue_regevent.uc
