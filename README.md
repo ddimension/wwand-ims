@@ -31,6 +31,21 @@ itself, runs the IPsec and SIP, and bridges the call and its AMR-WB audio to a
 phone on the LAN. The operator settings live in profiles selected by the SIM, so
 a new IoT operator is a new profile, not new code.
 
+## Modem settings: the patched MBN is the way
+
+The router UE needs the modem to report VoLTE support to the network (LTE FGI 3
+and 7); without them the eNB sets up no voice bearer and every call fails.
+There are two ways to set them, and they are not equal:
+
+- **Patched carrier MBN (the way for a deployment):**
+  `wwandctl ims [modem] mbn patch --upload` writes the settings into the
+  modem's carrier configuration and loads it. That is where the modem keeps
+  its operator settings itself, so this is the best way to make the needed
+  settings persistent.
+- **The AT FGI command (development only):** `wwandctl ims [modem] fix` sets
+  the FGIs with the Quectel command `AT+QNWCFG="lte_fgi_fdd"`. It is quick for
+  trying things out on a development modem and of no interest beyond that.
+
 ## Layout
 
 | Path | Language | What |
