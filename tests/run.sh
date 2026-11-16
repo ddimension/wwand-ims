@@ -42,6 +42,27 @@ if command -v cmake >/dev/null 2>&1 && [ -d "$IO_SRC" ]; then
 	  make >/dev/null ) || { echo "wwand_io module build failed" >&2; exit 1; }
 fi
 
+# BYTECODE=1: run the suite against what the package ships, the UE and sipd
+# modules compiled by CMakeLists.txt with this same ucode (bytecode is
+# VM-locked), instead of the sources. The require()d scripts are source in the
+# package too. The links above point back at the sources on the next plain run.
+if [ "${BYTECODE:-0}" = 1 ]; then
+	UC_BUILD="$TESTDIR/.build/ucode"
+	mkdir -p "$UC_BUILD"
+	( cd "$UC_BUILD" && cmake -DUCODE_COMPILER="$UCODE" "$TESTDIR/.." >/dev/null &&
+	  make >/dev/null ) || { echo "bytecode build failed" >&2; exit 1; }
+	grep -qx bytecode "$UC_BUILD/ucode-mode" ||
+		{ echo "$UCODE cannot emit bytecode" >&2; exit 1; }
+	n=0
+	for f in "$UC_BUILD"/ucode/wwand-ims/*.uc; do
+		# only the names the suite loads (linked above); the programs are not
+		[ -L "$TESTDIR/$(basename "$f")" ] || continue
+		ln -sfn "$f" "$TESTDIR/$(basename "$f")"
+		n=$((n + 1))
+	done
+	echo "bytecode: $n modules from $UC_BUILD/ucode/wwand-ims"
+fi
+
 rc=0
 for t in "$TESTDIR"/test_*.uc; do
 	out=$(cd "$TESTDIR" && "$UCODE" -L "$MODPATH" -L "$TESTDIR/*.uc" -L "$TESTDIR/wwand/*.uc" -L "$TESTDIR/*" "$t" 2>&1)

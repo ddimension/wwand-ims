@@ -68,9 +68,18 @@ carries the IMS PDN and lends the card (`docs/design.md`, section 1).
 ## Build / test
 
 `sh tests/run.sh` runs all suites; the `nstest_*` ones run against the real
-kernel (xfrm) in a user + network namespace of their own. Core changes
-wwand-ims needs are developed in the `ims-pcscf` branch of wwand (see
-`CLAUDE.md`).
+kernel (xfrm) in a user + network namespace of their own. `BYTECODE=1 sh
+tests/run.sh` runs them against the UE and sipd modules compiled to bytecode,
+the way the package ships them. Core changes wwand-ims needs are made on
+wwand's `main` (see `CLAUDE.md`).
+
+`CMakeLists.txt` is the package build: it lays the shipped ucode files out
+under their installed names (`build/ucode/wwand-ims/` → `/usr/share/wwand-ims`,
+`build/ucode/wwand/` → `/usr/share/ucode/wwand`) and compiles the ES modules
+and the two programs to bytecode with the given ucode (`-DUCODE_COMPILER=`;
+the feed passes the SDK's). An older ucode that cannot (openwrt-25.12's) gets
+the sources, as does `-DUCODE_PRECOMPILE=OFF`. The require()d scripts (plugin,
+`wwandctl ims`, `sipd_core`, `sipd_sip`, `ims_mcfg`) are always source.
 
 ## Licence
 

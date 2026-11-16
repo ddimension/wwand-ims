@@ -33,6 +33,7 @@ audibly). VoWiFi/strongSwan = phase 2. Details and phases:
 | `ctl/ims.uc` | `wwandctl ims [modem] check \| fix \| setup \| mbn`: what the router's own UE needs (VoLTE FGIs, the modem's IMS off, the IMS profile from the MBN) and the router side (IMS PDN, VRF, firewall, sipd line); `files/wwand-ims-setup` is `setup` as a script. Installed at `/usr/share/ucode/wwand/ctl/ims.uc` |
 | `sipd/` | `sipd.uc` (entry), `core.uc`, `sip.uc`: SIP registrar + B2BUA for LAN phones or a PBX trunk. Reads `/etc/config/wwand_ims`. Backend `ue` (`ims_modem` option `backend`): `line_ue.uc` (the router's own IMS UE as the line: registration, refresh, MO/MT), `relay.uc` (RTP 1:1 between LAN and the IMS VRF, and the watchdog that ends a call whose media died), `profile.uc` (`config ims_profile`: the one for the SIM by `match_imsi` / `match_iccid`, its values for the UE — SIP timers, expiry, sec-agree algorithms, transport, User-Agent, reg-event, media timeouts); backend `qmi`: the plugin's call control |
 | `src/mcfg/` | C, MBN (MCFG) inspection; only SHA-2 so far |
+| `CMakeLists.txt` | the package build: what ships under which installed name, bytecode for the ES modules and programs (wwand's approach, with a source fallback). **A new `.uc` under `plugins/ ctl/ sipd/ ue/ tools/` must be listed there** (or as unshipped) — the configure fails otherwise |
 | `files/` | `wwand_ims.config` (the config model / profiles), `wwand-ims-sipd.init` (procd), `ims-network.example` (IMS PDN in its VRF + firewall), `wwand-ims-l3mdev.hotplug` (restores the l3mdev rules netifd flushes), `asterisk-pjsip.example` (sipd as an Asterisk trunk) |
 | `tools/` | `efs-dump.sh` (read-only EFS snapshots), `calltest.sh`, `sipcall.uc`, `eg25-voice.uc`, `diag-trace/` (modem F3/SIP tracing over adb), `ims-register.uc` (the UE spike driver: register, call, answer, echo), `rtp-amrwb2wav.py`, `install-sipd.sh`, `qmi-idl-dump.py` (QMI ids and widths from a vendor `libqmiservices.so`), `qmi-libqmi-audit.sh` (every schema id libqmi 1.38 lacks) (lays sipd out for the init script until there is a package) |
 | `research/` | per-device notes and EFS snapshots (`rg650e-245/`, `eg25-rpi/`, `op8t-20261113/`). **Local only, in `.gitignore`**: it holds SIM identifiers, traces and vendor material and is never committed (removed from the history 2026-11-15). Real IMSIs, ICCIDs, phone numbers and device serials stay out of code, tests and docs as well |
@@ -92,8 +93,8 @@ doesn't offer yet, add a **generic** hook in wwand. Don't put IMS code there.
   against official documentation before anything writes. If a test switches
   the MBN, restore the modem afterwards (MBN, `AutoSel`) and note it in the
   research notes.
-- Namespaced imports, no hyphens in module paths (the wwand bytecode build
-  enforces both).
+- Namespaced imports, no hyphens in module paths (the bytecode builds of
+  wwand and of this repo, `CMakeLists.txt`, enforce both).
 - The licence is still open (mcfg_tools would make the C part GPL-3.0; the
   ucode parts are GPL-2.0-only), see `docs/design.md` §7.
 
@@ -101,7 +102,9 @@ doesn't offer yet, add a **generic** hook in wwand. Don't put IMS code there.
 `sh tests/run.sh` runs all of them, and they must be green before every
 commit. `nstest_*.uc` run under `unshare -rn` against the real kernel
 (xfrm), with UE/P-CSCF stand-in addresses on lo; skipped with a note where
-unprivileged user namespaces or `xfrm_user` are missing. It symlinks `tests/wwand` to `../wwand/src-ucode` (override with
+unprivileged user namespaces or `xfrm_user` are missing. `BYTECODE=1 sh
+tests/run.sh` runs the suite against the modules compiled by `CMakeLists.txt`
+(what the package ships); run it after touching a module's imports or exports. It symlinks `tests/wwand` to `../wwand/src-ucode` (override with
 `WWAND_SRC`) and uses the host ucode `~/.local/bin/ucode`. A change to the
 wwand codec or plugin API can break these tests, so run them after changes
 in `../wwand` as well.
