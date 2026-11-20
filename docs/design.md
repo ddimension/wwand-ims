@@ -271,11 +271,28 @@ Open for a router:
 
 ## 6. Test device
 
-The Chateau's RG650E (newest firmware and MBNs, QMI). The GDSP SIM needs
-slot 1, which holds the Telekom card that serves as the internet fallback;
-proposal: move the Telekom card to the E392 (`wwmodem1`, currently
-unplugged). The EG25-G on the Pi is the second choice (voice path well
-documented). The NR7101 is out: its IDEMIA card must stay.
+The Chateau, with two modems. Until 2026-11-19 the RG650E (newest firmware
+and MBNs, QMI) carried the IMS PDN on a mux channel next to its data PDN.
+Since then the roles are split: the RG650E carries data on the Telekom card
+(whose subscription has no IMS: the network refuses the `ims` PDN with ESM
+cause 33), and the Huawei E392 (`wwmodem1`) is the **IMS-only modem** with
+the GDSP SIM — the IMS PDN (`ims.iot`) is its only PDN, the UE registers and
+calls work. What that modem needed:
+
+- **USIM access:** its QMI UIM service has Send APDU but no logical channel
+  message, and its AT port no `CCHO`/`CGLA`. wwand's `qmi_apdu` transport
+  (core 3488705) opens the channel by hand; `ue/aka.uc` is unchanged.
+- **No mux:** raw_ip without QMAP, so one PDN and one `proto wwand`
+  interface on the modem, without `mux_id`.
+- **MTU:** the PDN's path MTU is about 1450 and the network signals none;
+  with wwand's 1500 the first fragment of the REGISTER is lost. `option mtu
+  '1400'` on the IMS interface. SIP over TCP for large requests is not built.
+- **No modem settings:** the stick has no IMS of its own to switch off and
+  no MBN; `wwandctl ims check`/`fix` have nothing to do on it, the profile is
+  a `config ims_profile` matched by IMSI.
+
+The EG25-G on the Pi is the second choice (voice path well documented). The
+NR7101 is out: its IDEMIA card must stay.
 
 ## 7. Open questions
 
