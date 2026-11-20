@@ -4,7 +4,7 @@ libqmi 1.38 is the preferred source for QMI ids, but since 2026-11-15 it is a
 recommendation, not a rule. Where libqmi lacks a message or TLV, another
 source may supply it. The id then names that source in a code comment, is
 measured on hardware before it is relied on, and is listed here (the plugin,
-`plugins/ims.uc`) or in `../wwand-ims-core/docs/qmi-beyond-libqmi.md` (the
+`plugins/ims.uc`) or in `../wwand/docs/qmi-beyond-libqmi.md` (the
 wwand core schemas, among them WDS 0x2E, the IPv6 P-CSCF list that
 `sipd/line_ue.uc` uses).
 

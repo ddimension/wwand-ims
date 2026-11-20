@@ -49,16 +49,21 @@ bytes) lives inside the value, so never return that pointer from a helper
 whose local holds `v` (copy it, see `field_str` in `src/xfrm`).
 
 ## wwand core work
-Core changes go into **`../wwand-ims-core`**, a git worktree of `../wwand`.
-The old `ims-pcscf` branch was collapsed into `main` and deleted (2026-11-15),
-so this worktree now sits on a **detached HEAD at `main`'s tip** (it cannot
-hold `main` itself — the colleague's `../wwand` has it). A colleague works in
-`../wwand` itself: never edit, stage or commit there. Keep current with
-`git fetch && git checkout --detach origin/main`. Commits land on `main` only
-when the user asks: commit on the detached HEAD and `git push origin HEAD:main`
-(fast-forward), or make a short-lived branch for the change. Run the tests here
-against it with `WWAND_SRC=../wwand-ims-core/src-ucode sh tests/run.sh`, and
-hwtest with `hwtest/run.sh -r ../wwand-ims-core` (or a `git archive` of a commit).
+Core changes are made and committed in **`../wwand`** on `main` (since
+2026-11-19, as the workspace guide says): `git fetch && git merge --ff-only
+origin/main`, commit, `git push origin main` — only when the user asks.
+Other sessions work in the same tree at the same time, so it usually holds
+uncommitted changes that are not yours: stage your own hunks only (never
+`git add -A` or a whole file somebody else also touched), and leave the rest
+as it is. `../wwand-ims-core`, the git worktree this project used before, is
+the colleague's now: **never edit, stage or commit there.** `../wwand/x` is
+never touched.
+
+The tests here run against `../wwand/src-ucode` by default (`WWAND_SRC`
+overrides it), hwtest with `hwtest/run.sh -r ../wwand` (or a `git archive` of
+a commit). `tests/.build/io` is a cmake build of that tree's `io/`: after
+pointing `WWAND_SRC` at another tree, remove it, or cmake refuses the cached
+source directory ("wwand_io module build failed").
 
 ## Build project
 `/vol/release/wwand-ims/` (README there): out-of-tree builds, host and
@@ -85,7 +90,7 @@ doesn't offer yet, add a **generic** hook in wwand. Don't put IMS code there.
   wrong id decodes garbage without any error, so such an id names its
   source in a code comment, is measured on hardware before it is relied
   on, and the code keeps a fallback. Every such id is listed in
-  `docs/qmi-beyond-libqmi.md` (the plugin's) or `../wwand-ims-core/docs/
+  `docs/qmi-beyond-libqmi.md` (the plugin's) or `../wwand/docs/
   qmi-beyond-libqmi.md` (the core's); `tools/qmi-libqmi-audit.sh` finds them.
   New decoders get a test with a hand-built wire buffer.
 - **EFS/NV is read-only** unless the user explicitly says otherwise. The EFS
@@ -123,5 +128,9 @@ P-CSCF in the status).
 ## State
 Hardware status and findings: `research/rg650e-245/NOTES.md` (RG650E on the
 Chateau: IMS registers and voice reports available, but the module refuses
-outgoing calls internally) and the research commits. The EG25-G on the Pi
-has working voice over USB/UAC.
+outgoing calls internally) and the research commits. Since 2026-11-19 the
+Chateau's roles are split (`docs/design.md` §6): the RG650E carries data, the
+Huawei E392 is the IMS-only modem with the GDSP SIM — the router's own UE
+registers over it and calls work (USIM over wwand's `qmi_apdu` transport, one
+PDN without a mux, `option mtu '1400'` on the IMS interface). The EG25-G on
+the Pi has working voice over USB/UAC.

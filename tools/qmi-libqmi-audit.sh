@@ -2,12 +2,12 @@
 # qmi-libqmi-audit.sh [CORE_SRC] [LIBQMI_DATA] [IDL_JSON]
 #
 # Dumps the QMI schemas of the wwand core (CORE_SRC = its src-ucode, default
-# ../wwand-ims-core/src-ucode) and of plugins/ims.uc, then runs
+# ../wwand/src-ucode) and of plugins/ims.uc, then runs
 # qmi-libqmi-audit.py against libqmi's data/ directory and, if given, a vendor
 # IDL dump. Needs the host ucode (~/.local/bin/ucode).
 set -e
 top=$(cd "$(dirname "$0")/.." && pwd)
-core=${1:-$top/../wwand-ims-core/src-ucode}
+core=${1:-$top/../wwand/src-ucode}
 libqmi=${2:-$(ls -d /vol/release/chateau/openwrt/build_dir/target-*/libqmi-1.38.0/data | head -1)}
 idl=${3:-$top/research/op8t-20261113/idl-libqmiservices.json}
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT

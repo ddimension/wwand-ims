@@ -5,7 +5,7 @@
 # libqmi 1.38 does not define (LIBQMI_DATA = libqmi's data/ directory), and
 # with --idl looks each one up in a vendor IDL dump (tools/qmi-idl-dump.py).
 # The schema JSON comes from tools/qmi-libqmi-audit.sh. The result is the
-# table in ../wwand-ims-core/docs/qmi-beyond-libqmi.md.
+# table in ../wwand/docs/qmi-beyond-libqmi.md.
 import json,re,sys
 args=sys.argv[1:]
 idl=None
