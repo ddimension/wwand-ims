@@ -7,9 +7,10 @@
 //   let p = PROFILE.select(sections, 'auto' | name, { imsi, iccid })   -> section or null
 //   let u = PROFILE.ue_opts(p)   -> { name, t1, t2, expires, algs, ealgs, user_agent,
 //                                     pcscf_port, reg_event, udp, tcp, rtp_timeout,
-//                                     rtcp_timeout, warn: [ ... ] }
+//                                     rtcp_timeout, alert_delay, warn: [ ... ] }
 //
-// A value the profile does not set is null: the UE's own default applies.
+// A value the profile does not set is null: the UE's own default applies
+// (alert_delay: 8 s, see ALERT_DELAY).
 
 'use strict';
 
@@ -68,6 +69,11 @@ export function select(profiles, want, sim)
 	return best;
 }
 
+// our 180 to an incoming call this late by default (ms). One number on
+// several SIMs (Telekom MultiSIM, docs/design.md 5.6): an at-once 180 kept
+// the network from alerting a phone in idle; 4 s were enough there.
+const ALERT_DELAY = 8000;
+
 function num(v)
 {
 	return (v != null && match(sprintf('%s', v), /^[0-9]+$/)) ? +v : null;
@@ -87,7 +93,8 @@ export function ue_opts(p)
 		t1: null, t2: null, expires: null, algs: null, ealgs: null,
 		user_agent: p?.user_agent, pcscf_port: num(p?.pcscf_port),
 		reg_event: flag(p?.reg_event, true), udp: true, tcp: true,
-		rtp_timeout: num(p?.rtp_timeout_s), rtcp_timeout: num(p?.rtcp_timeout_s) };
+		rtp_timeout: num(p?.rtp_timeout_s), rtcp_timeout: num(p?.rtcp_timeout_s),
+		alert_delay: num(p?.alert_delay_ms) ?? ALERT_DELAY };
 
 	let t1 = num(p?.sip_t1_ms), t2 = num(p?.sip_t2_s), exp = num(p?.reg_expires);
 	if (t1)

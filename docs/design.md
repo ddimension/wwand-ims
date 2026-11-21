@@ -269,6 +269,25 @@ Open for a router:
 - **GDSP:** the Vodafone product description lists VoWiFi with a separate
   setup; not tested.
 
+### 5.6 One number on two SIMs (Telekom MultiSIM, NR7101, 2026-11-21)
+
+The router's UE and a phone on a second SIM of the same number. With the
+router registered, the phone rang only while its display was on; with
+sipd stopped it rang in idle too. The caller always heard ringback.
+
+- Both contacts sit in the reg-event NOTIFY with `q="1"`. The network does
+  not fork in the S-CSCF: an AS sends one INVITE per device, each with
+  `Accept-Contact: *;+sip.instance="<that device>";explicit;require` and
+  `Request-Disposition: no-fork`. The router never sees the phone's leg.
+- Without preconditions in the offer the UE answered 100 and 180 within
+  70 ms. A phone in idle needs 1–3 s of paging before its own 18x, and the
+  network did not alert it then (the router's leg rang on until the CANCEL).
+- With the 180 held back 4 s (`ims_profile` option `alert_delay_ms '4000'`,
+  only the 100 before it; the LAN phone is offered the call at once) the
+  phone rang in idle as well. Measured with `option sip_trace`; the lowest
+  delay that is enough was not searched for. The default is 8 s, for every
+  profile (`alert_delay_ms '0'` sends the 180 at once).
+
 ## 6. Test device
 
 The Chateau, with two modems. Until 2026-11-19 the RG650E (newest firmware

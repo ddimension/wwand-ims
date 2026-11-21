@@ -82,6 +82,19 @@ if (!listen_ip) {
 }
 
 let port = +(gw.port ?? 5060);
+
+// option sip_trace '<file>': every SIP message, LAN and IMS side, in full
+// into that file (the IMS side is ESP, no packet capture shows it; syslog
+// would cut an INVITE short). For debugging only: it holds identities.
+let trace_fd = gw.sip_trace ? fs.open(gw.sip_trace, 'a') : null;
+if (gw.sip_trace && !trace_fd)
+	log('warn', sprintf('sipd: cannot open sip_trace %s: %s', gw.sip_trace, fs.error()));
+let trace = trace_fd ? (dir, peer, text) => {
+	let t = clock(), lt = localtime(t[0]);
+	trace_fd.write(sprintf('==== %04d-%02d-%02d %02d:%02d:%02d.%03d %s %s\n%s\n',
+		lt.year, lt.mon, lt.mday, lt.hour, lt.min, lt.sec, int(t[1] / 1000000), dir, peer, text));
+	trace_fd.flush();
+} : null;
 let codecs = filter(gw.codec ?? [ 'pcma', 'pcmu' ], (c) => c in { pcma: 1, pcmu: 1, g722: 1 });
 modem ??= im?.modem ?? 'wwmodem0';
 let backend = im?.backend ?? 'qmi';
@@ -108,6 +121,7 @@ if (!tcp || !tcp.bind({ address: listen_ip, port: port }) || !tcp.listen(16)) {
 let conns = {}, next_conn = 0;
 
 let send = (text, addr) => {
+	trace?.('lan ->', sprintf('%s %s:%d', addr.transport ?? 'UDP', addr.address, addr.port), text);
 	if (verbose)
 		log('debug', sprintf('-> %s %s:%d\n%s', addr.transport ?? 'UDP', addr.address, addr.port, text));
 	if (addr.transport == 'TCP') {
@@ -185,7 +199,7 @@ if (backend == 'ue') {
 		// interface's own option apn
 		apn: im.ims_apn ?? cur.get('network', im.ims_iface ?? 'wwims', 'apn'),
 		mnc_len: im.mnc_len ? +im.mnc_len : null,
-		pcscf: im.pcscf, relay: relay, log: log,
+		pcscf: im.pcscf, relay: relay, log: log, trace: trace,
 		profile_for: (sim) => PROFILE.ue_opts(PROFILE.select(profiles, im.profile, sim)),
 		on_incoming: (inc) => core?.on_line_incoming(inc) });
 }
@@ -270,6 +284,7 @@ uloop.handle(sock.fileno(), () => {
 	let buf;
 
 	while ((buf = sock.recv(65535, socket.MSG_DONTWAIT, from)) != null) {
+		trace?.('lan <-', sprintf('UDP %s:%d', from.address, from.port), buf);
 		if (verbose)
 			log('debug', sprintf('<- %s:%d\n%s', from.address, from.port, buf));
 		core.on_packet(buf, { address: from.address, port: from.port, transport: 'UDP' });
@@ -299,6 +314,7 @@ let tcp_frames = (c) => {
 
 		let msg = substr(c.buf, 0, he + 4 + len);
 		c.buf = substr(c.buf, he + 4 + len);
+		trace?.('lan <-', sprintf('TCP %s:%d', c.addr.address, c.addr.port), msg);
 		if (verbose)
 			log('debug', sprintf('<- TCP %s:%d\n%s', c.addr.address, c.addr.port, msg));
 		core.on_packet(msg, { ...c.addr });

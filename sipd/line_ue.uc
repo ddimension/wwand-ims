@@ -5,7 +5,8 @@
 // the registration up, places calls and hands incoming ones to sipd.
 //
 //   let line = LINE.create({ bus, uloop, socket, xfrm, modem, iface, vrf,
-//                            relay, log, on_incoming, profile_for })
+//                            relay, log, on_incoming, profile_for, trace })
+//   (trace(dir, peer, text): every SIP message on the IMS side, optional)
 //   line.start()
 //   line.dial(number, ev, { offer(qos, ver), ims_port }) -> ue/call.uc call, or null
 //   line.status() -> { state, ue_addr, pcscf, impu, expires, profile, reg_event }
@@ -366,6 +367,7 @@ export function create(o)
 
 		let send = (buf, dst, port, src) => {
 			let conn = (substr(buf, 0, 8) == 'SIP/2.0 ') ? t.tcp_by_callid[callid_of(buf) ?? ''] : null;
+			o.trace?.('ims ->', conn ? 'TCP' : sprintf('UDP %s:%d', dst, port), buf);
 			if (conn) {
 				conn.send(buf);
 				// the UDP copy of an 18x (see the top of the file)
@@ -431,8 +433,10 @@ export function create(o)
 			let sk = s;
 			push(t.handles, uloop.handle(sk, () => {
 				let b = sk.recvmsg(65535, null, 0);
-				if (b)
+				if (b) {
+					o.trace?.('ims <-', 'UDP', b.data);
 					dispatch(b.data);
+				}
 			}, uloop.ULOOP_READ));
 		}
 
@@ -471,6 +475,7 @@ export function create(o)
 						let id = callid_of(msg);
 						if (id && substr(msg, 0, 8) != 'SIP/2.0 ')
 							t.tcp_by_callid[id] = c;
+						o.trace?.('ims <-', 'TCP', msg);
 						dispatch(msg);
 					}
 				}, uloop.ULOOP_READ);
@@ -668,6 +673,7 @@ export function create(o)
 			contact_user: r.env.imsi, imei_urn: REG.imei_urn(r.env.imei), pani: r.env.pani,
 			sec_verify: r.reg.server_raw, rtp_port: rtp_port,
 			t1: r.env.prof?.t1, t2: r.env.prof?.t2, user_agent: r.env.prof?.user_agent,
+			alert_delay: r.env.prof?.alert_delay,
 			timer: (ms, fn) => uloop.timer(ms, fn),
 			log: (lvl, msg) => log(lvl, 'ue: ' + msg),
 			send: r.send, qos_wait: qos_wait,

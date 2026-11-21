@@ -56,7 +56,7 @@ eq([ d.udp, d.tcp, d.reg_event ], [ true, true, true ], 'no profile: UDP and TCP
 
 let w = PROFILE.ue_opts({ '.name': 'odd', ipsec_integrity: 'hmac-sha2-256-128', ipsec_encryption: 'aes-gcm, 3des',
 	sip_transport: 'tcp', auth: 'akav2-md5', reg_event: '0', user_agent: 'Example-UE/1.0', pcscf_port: '5070',
-	rtp_timeout_s: '0', rtcp_timeout_s: '45', sip_t1_ms: '3000', sip_t2_s: '2' });
+	rtp_timeout_s: '0', rtcp_timeout_s: '45', sip_t1_ms: '3000', sip_t2_s: '2', alert_delay_ms: '4000' });
 eq(w.algs, null, 'no supported integrity: the UE defaults, not an empty offer');
 eq(w.ealgs, [ 'des-ede3-cbc' ], 'the supported cipher stays, the unknown one goes');
 eq([ w.udp, w.tcp ], [ true, true ], 'tcp only: listened on, requests still over UDP');
@@ -64,6 +64,8 @@ eq(w.reg_event, false, 'reg_event 0');
 eq([ w.user_agent, w.pcscf_port, w.rtp_timeout, w.rtcp_timeout ], [ 'Example-UE/1.0', 5070, 0, 45 ],
 	'User-Agent, P-CSCF port, media timeouts (0 = off is kept)');
 eq([ w.t1, w.t2 ], [ 3000, 3000 ], 'T2 never below T1');
+eq([ w.alert_delay, d.alert_delay ], [ 4000, 8000 ], 'alert_delay_ms; 8 s without a profile');
+eq(PROFILE.ue_opts({ alert_delay_ms: '0' }).alert_delay, 0, 'alert_delay_ms 0: the 180 at once');
 eq(length(w.warn), 5, 'one warning per thing that could not be honoured');
 eq(PROFILE.ue_opts({ sip_transport: 'udp' }).tcp, false, 'udp only: no TCP listener');
 

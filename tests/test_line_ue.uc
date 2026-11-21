@@ -13,7 +13,7 @@ let UE = '2001:db8::5', P1 = '2001:db8:ff::10', P2 = '2001:db8:ff::11';
 
 function world(prof)
 {
-	let w = { now: 0, timers: [], socks: [], sent: [], logs: [], asked: [] };
+	let w = { now: 0, timers: [], socks: [], sent: [], logs: [], asked: [], traced: [] };
 	w.socket = {
 		AF_INET: 2, AF_INET6: 10, SOCK_DGRAM: 2, SOCK_STREAM: 1, SOL_SOCKET: 1, SO_BINDTODEVICE: 25,
 		SO_REUSEADDR: 2, IPPROTO_IP: 0, IPPROTO_IPV6: 41, IP_FREEBIND: 15, IPV6_FREEBIND: 78,
@@ -65,6 +65,7 @@ function world(prof)
 	           policy_add: () => true, policy_del: () => true, error: () => null };
 	w.line = LINE.create({ bus: w.bus, uloop: w.uloop, socket: w.socket, xfrm: w.xfrm, modem: 'm0',
 		iface: 'wwims', vrf: 'ims', log: (l, m) => push(w.logs, m),
+		trace: (dir, peer, text) => push(w.traced, [ dir, peer, text ]),
 		profile_for: (sim) => { push(w.asked, sim); return prof; } });
 	// the first transmission of each REGISTER (retransmissions have the same branch)
 	w.registers = () => {

@@ -244,7 +244,8 @@ export function sdp_media(sdp)
 
 // o: { ue_addr, port_c, port_s, pcscf: { addr, port_s, port_c }, route: [ ... ],
 //      impu, contact_user, imei_urn, pani, sec_verify, rtp_port, timer, send,
-//      log, t1, user_agent, call_id, from_tag, preconditions, qos_wait, mt_mode }
+//      log, t1, user_agent, call_id, from_tag, preconditions, qos_wait, mt_mode,
+//      alert_delay }
 //
 // preconditions (default true): offer them on dial(), and use them on an
 // incoming call whose offer carries them. qos_wait(cb) is called once per
@@ -832,13 +833,25 @@ export function create(o)
 			return;
 		}
 
-		let ex = [ [ 'Contact', contact ], [ 'Allow', ALLOW ] ];
-		if (self.uas.reliable) {
-			push(ex, [ 'Require', '100rel' ], [ 'RSeq', sprintf('%d', ++self.uas.rseq) ]);
-			uas_repeat(uas_resp(180, 'Ringing', ex), () => log('warn', 'call: no PRACK for the 180'));
-		}
+		let ring = () => {
+			if (self.state != 'incoming')
+				return;    // answered, rejected or cancelled meanwhile
+			let ex = [ [ 'Contact', contact ], [ 'Allow', ALLOW ] ];
+			if (self.uas.reliable) {
+				push(ex, [ 'Require', '100rel' ], [ 'RSeq', sprintf('%d', ++self.uas.rseq) ]);
+				uas_repeat(uas_resp(180, 'Ringing', ex), () => log('warn', 'call: no PRACK for the 180'));
+			}
+			else
+				uas_send(uas_resp(180, 'Ringing', ex));
+		};
+		// o.alert_delay (ms): the 180 that late, only the 100 before it. When
+		// the network rings several devices of one number (MultiSIM), our
+		// at-once 180 may decide things before a device in idle has been
+		// paged. The phone or PBX is offered the call at once all the same.
+		if (o.alert_delay > 0)
+			timer(o.alert_delay, ring);
 		else
-			uas_send(uas_resp(180, 'Ringing', ex));
+			ring();
 		emit('incoming', { from: self.uas.peer, offer: length(msg.body ?? '') > 0 });
 	};
 

@@ -440,6 +440,40 @@ s.call.incoming(CALL.initial_invite(net_invite('100rel')), (n, d) => push(in_ev,
 ok(s.last().msg.status == 180 && s.call.pre == null && in_ev[0] == 'incoming',
 	'MT: no qos lines in the offer -> plain reliable 180 at once');
 
+// MT with alert_delay: only the 100 until the delay is over, the phone is told at once
+let mk_delayed = () => {
+	let x = setup();
+	x.call = CALL.create({
+		ue_addr: UE, port_c: 5062, port_s: 5064, pcscf: { addr: PC, port_s: 6000, port_c: 32838 }, route: [],
+		impu: IMPU, contact_user: '001010123456789', imei_urn: 'urn:gsma:imei:35345678-901234-0',
+		sec_verify: 'x', rtp_port: 40000, timer: x.clk.timer, call_id: 'x', from_tag: 'ft1', alert_delay: 3000,
+		send: (buf, dst, port, src) => push(x.out, { msg: SIP.parse(buf), buf: buf, dst: dst, port: port, src: src }),
+	});
+	return x;
+};
+s = mk_delayed();
+in_ev = [];
+s.call.incoming(CALL.initial_invite(net_invite(null)), (n, d) => push(in_ev, n));
+eq([ map(s.out, (x) => x.msg.status), in_ev ], [ [ 100 ], [ 'incoming' ] ], 'alert_delay: 100 only, incoming at once');
+s.clk.advance(2900);
+eq(length(s.out), 1, 'alert_delay: no 180 before the delay');
+s.clk.advance(100);
+eq(map(s.out, (x) => x.msg.status), [ 100, 180 ], 'alert_delay: the 180 after it');
+// answered within the delay: the 200, and no 180 after it
+s = mk_delayed();
+s.call.incoming(CALL.initial_invite(net_invite(null)), s.ev);
+s.call.accept();
+s.clk.advance(5000);
+let dst = map(s.out, (x) => x.msg.status);
+ok(dst[0] == 100 && dst[1] == 200 && index(dst, 180) < 0, 'alert_delay: answered within it -> 200, no late 180');
+// cancelled within the delay: 487, and no 180 after it
+s = mk_delayed();
+s.call.incoming(CALL.initial_invite(net_invite(null)), s.ev);
+s.call.on_message(replace(replace(net_invite(null), 'INVITE sip', 'CANCEL sip'), '10 INVITE', '10 CANCEL'));
+s.clk.advance(5000);
+dst = map(s.out, (x) => x.msg.status);
+ok(index(dst, 487) > 0 && index(dst, 180) < 0, 'alert_delay: cancelled within it -> 487, no late 180');
+
 // MT test mode rel183: answer in a reliable 183, 180 after the PRACK, 200 without SDP
 s = setup();
 s.call = CALL.create({
