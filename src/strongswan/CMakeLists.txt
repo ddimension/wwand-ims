@@ -41,8 +41,11 @@ else()
 endif()
 
 set(SW_INCLUDES "${SW_LIBS}/libstrongswan" "${SW_LIBS}/libcharon" "${SW_LIBS}/libsimaka")
-# -Wno-format: strongSwan's own printf hooks (%Y, %B, ...)
-set(SW_FLAGS -include "${STRONGSWAN_INCLUDE_DIR}/config.h" -Wall -Wno-pointer-sign -Wno-format)
+# strongSwan's own warning set for its sources (configure.ac WARN_CFLAGS):
+# its printf hooks (%Y, %B, ...) are unknown to -Wformat, and
+# -Wno-format-security goes with it (OpenWrt's -Werror=format-security
+# fails without -Wformat)
+set(SW_FLAGS -include "${STRONGSWAN_INCLUDE_DIR}/config.h" -Wall -Wno-format -Wno-format-security -Wno-pointer-sign)
 
 # NO_CMAKE_FIND_ROOT_PATH: exactly where told — OpenWrt's cmake.mk confines
 # library lookups to its find root, which would re-root a path given here
