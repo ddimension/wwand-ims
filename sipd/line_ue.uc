@@ -11,7 +11,15 @@
 //   line.dial(number, ev, { offer(qos, ver), ims_port }) -> ue/call.uc call, or null
 //   line.status() -> { state, ue_addr, pcscf, impu, expires, profile, reg_event }
 //   line.profile() -> the operator profile's values in use (sipd/profile.uc ue_opts)
+//   line.sms_send(number, text, cb)       an SMS over IMS (option smsip), cb(err, { parts, refs })
 //   line.stop(cb)                         de-REGISTER, SAs and sockets down
+//
+// SMS over IP (o.smsip, ue/smsip.uc): the registration carries
+// +g.3gpp.smsip, an SMS that arrives goes to o.deliver(pdu_hex, cb(err))
+// (sipd: wwand's modem_sms_deliver, into the modem's store), o.encode_submit
+// builds the parts of one
+// to send (wwand's sms_pdu). The SC: the profile's sms_smsc, else the one an
+// SMS arrived from, else the SIM's (AT+CSCA?).
 //
 // on_incoming(inc): inc = { call, media (relay.alloc()), number, called, set(ev) };
 // sipd calls inc.set(ev) to receive the call's events (queued until then).
@@ -47,6 +55,7 @@ import * as REG from 'ue_reg';
 import * as AKA from 'ue_aka';
 import * as CALL from 'ue_call';
 import * as SUB from 'ue_regevent';
+import * as SMSIP from 'ue_smsip';
 
 const PAIRS = [ [ 5062, 5064 ], [ 5072, 5074 ] ];
 
@@ -204,6 +213,17 @@ function SIP_user(msg, name)
 		}
 	let m = match(h ?? '', /<?(tel|sips?):([^@;>]+)/);
 	return m ? m[2] : null;
+}
+
+// the SC from `AT+CSCA?` (+CSCA: "+491234",145), or null
+export function smsc_from_csca(lines)
+{
+	for (let l in lines ?? []) {
+		let m = match(l, /^\+CSCA: *"(\+?[0-9]+)"/);
+		if (m)
+			return m[1];
+	}
+	return null;
 }
 
 export function create(o)
@@ -394,7 +414,7 @@ export function create(o)
 			imsi: env.imsi, mnc_len: env.mnc_len, imei: env.imei,
 			ue_addr: env.ue_addr, pcscf_addr: env.pcscf, port_c: pair[0], port_s: pair[1],
 			pani: env.pani, card: AKA.wwand_card(ubus_call, o.modem, o.slot), xfrm: o.xfrm,
-			smsip: false, sa_opts: o.vrf ? {} : null, reqid: 0x1500 + 0x10 * pair_ix,
+			smsip: !!o.smsip, sa_opts: o.vrf ? {} : null, reqid: 0x1500 + 0x10 * pair_ix,
 			t1: env.prof?.t1, t2: env.prof?.t2, expires: env.prof?.expires,
 			algs: env.prof?.algs, ealgs: env.prof?.ealgs,
 			user_agent: env.prof?.user_agent, pcscf_port: env.prof?.pcscf_port,
@@ -407,6 +427,8 @@ export function create(o)
 			if (r.reg.on_message(data))
 				return;
 			if (r.sub?.on_message(data))
+				return;
+			if (r.sms?.on_message(data))
 				return;
 			let id = callid_of(data);
 			let c = id ? calls[id] : null;
@@ -500,6 +522,7 @@ export function create(o)
 		if (!r)
 			return cb?.();
 		r.sub?.close();
+		r.sms?.close();
 		let done = () => {
 			close_transport(r.t);
 			cb?.();
@@ -512,7 +535,7 @@ export function create(o)
 
 	// ---- the registration's life ----------------------------------------------------
 
-	let schedule_refresh, register, refresh_due, start_sub;
+	let schedule_refresh, register, refresh_due, start_sub, start_sms;
 
 	register = () => {
 		if (self.state == 'stopped')
@@ -564,6 +587,7 @@ export function create(o)
 				drop_reg(old, false);
 			schedule_refresh();
 			start_sub(r);
+			start_sms(r);
 		});
 	};
 
@@ -627,6 +651,39 @@ export function create(o)
 			},
 		});
 		r.sub.start();
+	};
+
+	// ---- SMS over IP ------------------------------------------------------------------
+
+	// the SC: the profile's, else the one the last SMS came from, else the SIM's
+	let smsc_seen = null, smsc_sim = false;
+	let smsc_of = () => {
+		if (prof.sms_smsc)
+			return prof.sms_smsc;
+		if (smsc_seen)
+			return smsc_seen;
+		if (smsc_sim === false)
+			smsc_sim = smsc_from_csca(at('AT+CSCA?')?.response);
+		return smsc_sim;
+	};
+
+	start_sms = (r) => {
+		if (!o.smsip)
+			return;
+		r.sms = SMSIP.create({
+			ue_addr: r.env.ue_addr, port_c: r.pair[0], port_s: r.pair[1],
+			pcscf: r.res.pcscf, route: r.res.service_route, impu: impu(), pani: r.env.pani,
+			sec_verify: r.reg.server_raw, t1: r.env.prof?.t1, t2: r.env.prof?.t2,
+			user_agent: r.env.prof?.user_agent,
+			timer: (ms, fn) => uloop.timer(ms, fn),
+			log: (lvl, msg) => log(lvl, 'ue: ' + msg),
+			send: r.send,
+			smsc: smsc_of,
+			psi: prof.sms_psi ? ((sc) => replace(prof.sms_psi, '%s', sc)) : null,
+			encode_submit: o.encode_submit,
+			deliver: (pdu, cb) => o.deliver ? o.deliver(pdu, cb) : cb({ error: 'no_store' }),
+			on_smsc: (n) => { smsc_seen = n; },
+		});
 	};
 
 	// a new address or P-CSCF on the PDN (re-attach), or the PDN gone: start over
@@ -756,10 +813,18 @@ export function create(o)
 	self.status = () => ({
 		state: self.state, ue_addr: cur?.env?.ue_addr, pcscf: cur?.env?.pcscf, impu: impu(),
 		expires: cur?.res?.expires, ports: cur?.pair, calls: length(keys(calls)),
-		profile: prof.name, reg_event: cur?.sub?.state,
+		profile: prof.name, reg_event: cur?.sub?.state, smsip: !!o.smsip,
 	});
 
 	self.profile = () => prof;
+
+	self.sms_send = function(number, text, cb) {
+		if (!o.smsip)
+			return cb({ error: 'smsip_off', detail: 'SMS over IP is off (ims_modem option smsip)' }, null);
+		if (!cur?.sms || self.state != 'registered')
+			return cb({ error: 'not_registered' }, null);
+		cur.sms.send(number, text, cb);
+	};
 
 	self.stop = function(cb) {
 		self.state = 'stopped';

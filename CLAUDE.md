@@ -26,6 +26,7 @@ audibly). VoWiFi/strongSwan = phase 2. Details and phases:
 | `ue/aka.uc` | USIM AUTHENTICATE over `wwand modem_apdu` (own logical channel, T=0 61xx/6Cxx), AUTS, Digest AKAv1-MD5 nonce, IMPI/IMPU from the IMSI |
 | `ue/call.uc` | one outgoing call (UAC): INVITE in the SAs, PRACK, ACK, BYE/CANCEL, emergency numbers refused |
 | `ue/regevent.uc` | the UE's reg-event subscription (RFC 3680): SUBSCRIBE in the SAs, the reginfo NOTIFYs, what they mean for our own binding (terminated, shortened) |
+| `ue/smsip.uc` | SMS over IP (TS 24.341): the RP layer (TS 24.011: RP-DATA/ACK/ERROR), MT MESSAGE -> 200 -> wwand's `modem_sms_deliver` (written into the modem's store, `ims_modem` option `sms_storage` ME/SM) -> RP-ACK/RP-ERROR to the SC, MO RP-DATA per part -> 202 -> the network's RP-ACK; on with `ims_modem` option `smsip`, `wwand modem_sms_send` reaches it through the plugin's `sms_send` hook and sipd's ubus `sms_send` |
 | `ue/secagree.uc` | Security-Client/-Server/-Verify, ESP keys (TS 33.203 Annex I), the four SAs + policies (7.1), apply/remove/reserve over the xfrm module |
 | `src/xfrm/` | C ucode module `wwand_ims_xfrm` (NETLINK_XFRM: alloc_spi, sa_add/del, policy_add/del, error) |
 | `plugins/ims.uc` | wwand plugin, runs **inside the wwand daemon**: IMS state, call control over QMI (IMSA, IMS, NAS, Voice) — the modem-IMS backend. `ubus call wwand modem_plugin '{"modem":…,"plugin":"ims","op":"status\|calls\|dial\|answer\|hangup"}'`; installed at `/usr/share/ucode/wwand/plugins/ims.uc` |

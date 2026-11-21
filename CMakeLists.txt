@@ -45,6 +45,7 @@ set(IMS_UCODE_MODULES
   ue/call.uc=wwand-ims/ue_call.uc
   ue/reg.uc=wwand-ims/ue_reg.uc
   ue/regevent.uc=wwand-ims/ue_regevent.uc
+  ue/smsip.uc=wwand-ims/ue_smsip.uc
   ue/secagree.uc=wwand-ims/ue_secagree.uc
   sipd/line_ue.uc=wwand-ims/sipd_line_ue.uc
   sipd/profile.uc=wwand-ims/sipd_profile.uc
@@ -73,7 +74,7 @@ set(IMS_UCODE_UNSHIPPED
 )
 
 # imported names outside this tree, resolved on the device
-set(IMS_UCODE_EXTERN digest fs socket struct ubus uci uloop wwand_io wwand.log)
+set(IMS_UCODE_EXTERN digest fs socket struct ubus uci uloop wwand_io wwand.log wwand.sms_pdu)
 
 # --- capability probe ---------------------------------------------------------
 # An older ucode (2026.01.16, the openwrt-25.12 images up to 25.12.6, has no

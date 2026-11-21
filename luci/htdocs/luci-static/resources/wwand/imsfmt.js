@@ -111,6 +111,7 @@ return baseclass.extend({
 		if (ue.expires != null)
 			rows.push([ _('Registration expiry'), dur(ue.expires) ]);
 		rows.push([ _('Operator profile'), ue.profile || _('built-in defaults') ]);
+		rows.push([ _('SMS over IMS'), ue.smsip ? _('on') : _('off') ]);
 		if (ue.reg_event)
 			rows.push([ _('Registration events'), REG_EVENT[ue.reg_event] || ue.reg_event ]);
 		return rows;

@@ -292,6 +292,31 @@ sipd stopped it rang in idle too. The caller always heard ringback.
   text="CC_NOT_REACHABLE"`), so the call never rang there. sipd warns about
   more than 5 s.
 
+### 5.7 SMS over IP (2026-11-21, not measured yet)
+
+The router's UE can register for SMS (`ims_modem` option `smsip`, off by
+default): `+g.3gpp.smsip` in the Contact, and SIP MESSAGE with
+`application/vnd.3gpp.sms` both ways (TS 24.341, RP layer TS 24.011,
+`ue/smsip.uc`). What arrives is written into the modem's own store
+(`ims_modem` option `sms_storage`, ME or SM; wwand `modem_sms_deliver`,
+`sms.uc sms_write`: QMI WMS Raw Write + Modify Tag to unread, else
+`AT+CMGW=<len>,0`) as if the modem had received it, and is managed there like
+any SMS: `wwandctl sms <modem> ME`, the LuCI SMS list, the `sms` event. A
+full store answers the network with RP-ERROR cause 22, and it delivers
+again later. Raw Write of an SMS-DELIVER measured on the RG502Q (NR7101,
+2026-11-21): accepted, stored as MT read, Modify Tag makes it unread; AT
+CMGW not measured.
+wwand's `modem_sms_send` goes over IMS while the UE has `smsip` on and is
+registered (the plugin's `sms_send` hook -> sipd's ubus `sms_send`).
+
+Open, to be measured with `option sip_trace` before anything relies on it:
+the response the network expects for an MT MESSAGE (200 is sent), the
+Request-URI of an MO MESSAGE (`tel:<SC>` unless a profile sets `sms_psi`),
+whether the delivery report must carry more headers, and the SC (profile
+`sms_smsc`, else the one an SMS came from, else `AT+CSCA?`). With one
+number on several SIMs (§5.6) the network may deliver the SMS to the
+router instead of the phone once `smsip` is registered.
+
 ## 6. Test device
 
 The Chateau, with two modems. Until 2026-11-19 the RG650E (newest firmware

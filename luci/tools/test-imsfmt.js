@@ -48,7 +48,7 @@ eq(fmt.ue_rows({ ue: { state: 'registered', impu: 'sip:+4915550000001@ims.exampl
                        pcscf: '2001:db8:ff::10', expires: 7190, profile: null, reg_event: 'active' } }), [
 	[ 'Registration', 'registered' ], [ 'Public identity', 'sip:+4915550000001@ims.example' ],
 	[ 'UE address', '2001:db8::5' ], [ 'P-CSCF', '2001:db8:ff::10' ], [ 'Registration expiry', '1h 59m' ],
-	[ 'Operator profile', 'built-in defaults' ], [ 'Registration events', 'subscribed' ] ], 'ue_rows');
+	[ 'Operator profile', 'built-in defaults' ], [ 'SMS over IMS', 'off' ], [ 'Registration events', 'subscribed' ] ], 'ue_rows');
 eq(fmt.ue_rows({ ue: null }), [], 'ue_rows: backend qmi has none');
 
 eq(fmt.gw_rows({ backend: 'ue', modem: 'wwmodem0', listen: '192.168.1.1', port: 5060, started: T, now: T + 90 }), [

@@ -100,6 +100,23 @@ eq([ w.line.status().state, w.line.status().profile, w.line.profile().t1 ], [ 'r
 ok(length(filter(w.logs, (l) => l == 'ue: operator profile op_a')) == 1 &&
 	length(filter(w.logs, (l) => l == 'ue: profile op_a: something odd')) == 1, 'the profile and its warnings are logged');
 
+// ---- SMS over IP ----------------------------------------------------------------------------
+
+eq(LINE.smsc_from_csca([ '+CSCA: "+4917000000",145', 'OK' ]), '+4917000000', 'smsc_from_csca');
+eq(LINE.smsc_from_csca([ 'ERROR' ]), null, 'smsc_from_csca: none');
+let sms_err = null;
+w.line.sms_send('+4915550000003', 'x', (e) => { sms_err = e; });
+eq(sms_err?.error, 'smsip_off', 'sms_send: option smsip off');
+let ws = world({});
+ws.line = LINE.create({ bus: ws.bus, uloop: ws.uloop, socket: ws.socket, xfrm: ws.xfrm, modem: 'm0',
+	iface: 'wwims', vrf: 'ims', smsip: true, profile_for: () => ({}) });
+ws.line.start();
+ws.line.sms_send('+4915550000003', 'x', (e) => { sms_err = e; });
+eq(sms_err?.error, 'not_registered', 'sms_send: smsip on, not registered yet');
+ok(index(SIP.get(ws.registers()[0].msg, 'contact'), '+g.3gpp.smsip') >= 0 && ws.line.status().smsip,
+	'smsip on: the REGISTER\'s Contact has +g.3gpp.smsip, the status says so');
+ok(index(SIP.get(w.registers()[0].msg, 'contact'), 'smsip') < 0 && !w.line.status().smsip, 'smsip off: neither');
+
 // ---- P-CSCF failover ----------------------------------------------------------------------
 
 // nobody answers: Timer F (64*T1 = 64 s), then the next P-CSCF after 5 s

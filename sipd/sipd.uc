@@ -24,6 +24,7 @@ import * as LINE from 'sipd_line_ue';
 import * as RELAY from 'sipd_relay';
 import * as PROFILE from 'sipd_profile';
 import * as logmod from 'wwand.log';
+import * as sms_pdu from 'wwand.sms_pdu';
 
 let CORE = require('sipd_core');
 
@@ -207,6 +208,18 @@ if (backend == 'ue') {
 		apn: im.ims_apn ?? cur.get('network', im.ims_iface ?? 'wwims', 'apn'),
 		mnc_len: im.mnc_len ? +im.mnc_len : null,
 		pcscf: im.pcscf, relay: relay, log: log, trace: trace,
+		// SMS over IP (ims_modem option smsip): what arrives is written into
+		// the modem's own store (option sms_storage, ME or SM), as if the
+		// modem had received it, and managed there like any SMS
+		smsip: (im.smsip == '1' || im.smsip == 'on' || im.smsip == 'true'),
+		encode_submit: sms_pdu.encode_submit,
+		deliver: (pdu, cb) => {
+			let r = bus.call('wwand', 'modem_sms_deliver', { modem: modem, storage: (im.sms_storage == 'SM') ? 'SM' : 'ME',
+				pdu: pdu, via: 'ims' });
+			if (r?.ok)
+				return cb(null);
+			cb(r ?? { error: 'ubus', detail: ubus.error() });
+		},
 		profile_for: (sim) => PROFILE.ue_opts(PROFILE.select(profiles, im.profile, sim)),
 		on_incoming: (inc) => core?.on_line_incoming(inc) });
 }
@@ -277,6 +290,20 @@ let ubus_obj = bus.publish('wwand-ims', {
 	calls: {
 		args: { ubus_rpc_session: '' },
 		call: (req) => ({ now: time(), calls: core.history() }),
+	},
+	// an SMS over IMS: wwand's modem_sms_send hands it here (the ims plugin's
+	// sms_send hook) while option smsip is on; the reply is wwand's shape
+	sms_send: {
+		args: { modem: '', number: '', text: '', ubus_rpc_session: '' },
+		call: (req) => {
+			if (!line)
+				return { ok: false, error: 'smsip_off', detail: 'backend qmi: the modem sends SMS itself' };
+			if (req.args.modem && req.args.modem != modem)
+				return { ok: false, error: 'no_such_modem' };
+			req.defer();
+			line.sms_send(req.args.number, req.args.text, (err, res) =>
+				req.reply(err ? { ok: false, ...err } : { ok: true, ...(res ?? {}) }));
+		},
 	},
 });
 if (!ubus_obj)

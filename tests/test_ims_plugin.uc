@@ -129,10 +129,11 @@ let fake = (schema) => ({
 	},
 });
 
-let events = [];
+let events = [], sipd_calls = [], sipd_answer = { ok: true, parts: 1, refs: [ 3 ], via: 'ims' };
 let inst = P.create({
 	log: () => null,
 	event: (type, data) => push(events, [ type, data ]),
+	sipd_call: (method, args, cb) => { push(sipd_calls, [ method, args ]); cb(null, sipd_answer); },
 	qmi_client: (ref, schema, cb) => { push(opened, schema.service); cb(null, fake(schema)); },
 	qmi_release: () => released++,
 });
@@ -161,6 +162,22 @@ eq(length(inst.status('m0')), 2, 'a UE report for another modem is not mixed in'
 // a de-registered UE still shows, so the drop is visible
 inst.report_ue({ modem: 'm0', state: 'down' });
 eq(inst.status('m0')[0], { label: 'IMS UE', text: 'down', level: 'warn' }, 'UE row: down is shown, not hidden');
+
+// SMS over IMS: the plugin takes wwand's modem_sms_send while the UE has smsip on and is registered
+let sms_r = null, sms_e = null;
+let sms_cb = (e, r) => { sms_e = e; sms_r = r; };
+eq(inst.sms_send('m0', {}, '+4915550000003', 'hi', sms_cb), false, 'sms_send: UE down -> the modem sends');
+inst.report_ue({ modem: 'm0', backend: 'ue', state: 'registered', smsip: false });
+eq(inst.sms_send('m0', {}, '+4915550000003', 'hi', sms_cb), false, 'sms_send: smsip off -> the modem sends');
+inst.report_ue({ modem: 'm0', backend: 'ue', state: 'registered', smsip: true });
+eq(inst.sms_send('m0', {}, '+4915550000003', 'hi', sms_cb), true, 'sms_send: smsip on, registered -> taken');
+eq([ sipd_calls[0], sms_e, sms_r ], [ [ 'sms_send', { modem: 'm0', number: '+4915550000003', text: 'hi' } ],
+	null, { parts: 1, refs: [ 3 ], via: 'ims' } ], 'sms_send: through sipd, its answer without ok');
+sipd_answer = { ok: false, error: 'rp_error', cause: 42 };
+inst.sms_send('m0', {}, '+4915550000003', 'hi', sms_cb);
+eq([ sms_e, sms_r ], [ { error: 'rp_error', cause: 42 }, null ], 'sms_send: sipd\'s error as the error');
+eq(inst.sms_send('mX', {}, '+4915550000003', 'hi', sms_cb), false, 'sms_send: another modem -> not taken');
+inst.report_ue({ modem: 'm0', state: 'down' });
 
 // indications become ubus events for the SIP side
 handlers.ALL_CALL_STATUS_IND({ calls: [ { id: 2, state: 2, type: 0, direction: 2, mode: 4, mpty: 0, als: 0 } ],

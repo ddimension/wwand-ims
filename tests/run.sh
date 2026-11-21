@@ -18,6 +18,7 @@ ln -sfn ../sipd/line_ue.uc "$TESTDIR/sipd_line_ue.uc"
 ln -sfn ../sipd/relay.uc "$TESTDIR/sipd_relay.uc"
 ln -sfn ../sipd/profile.uc "$TESTDIR/sipd_profile.uc"
 ln -sfn ../ue/regevent.uc "$TESTDIR/ue_regevent.uc"
+ln -sfn ../ue/smsip.uc "$TESTDIR/ue_smsip.uc"
 ln -sfn ../ctl/ims.uc "$TESTDIR/ctl_ims.uc"
 ln -sfn ../ctl/mcfg.uc "$TESTDIR/ims_mcfg.uc"
 

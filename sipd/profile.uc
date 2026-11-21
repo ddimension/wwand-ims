@@ -7,7 +7,8 @@
 //   let p = PROFILE.select(sections, 'auto' | name, { imsi, iccid })   -> section or null
 //   let u = PROFILE.ue_opts(p)   -> { name, t1, t2, expires, algs, ealgs, user_agent,
 //                                     pcscf_port, reg_event, udp, tcp, rtp_timeout,
-//                                     rtcp_timeout, alert_delay, warn: [ ... ] }
+//                                     rtcp_timeout, alert_delay, sms_smsc, sms_psi,
+//                                     warn: [ ... ] }
 //
 // A value the profile does not set is null: the UE's own default applies
 // (alert_delay: 4.5 s, see ALERT_DELAY).
@@ -97,7 +98,11 @@ export function ue_opts(p)
 		user_agent: p?.user_agent, pcscf_port: num(p?.pcscf_port),
 		reg_event: flag(p?.reg_event, true), udp: true, tcp: true,
 		rtp_timeout: num(p?.rtp_timeout_s), rtcp_timeout: num(p?.rtcp_timeout_s),
-		alert_delay: num(p?.alert_delay_ms) ?? ALERT_DELAY };
+		alert_delay: num(p?.alert_delay_ms) ?? ALERT_DELAY,
+		sms_smsc: match(p?.sms_smsc ?? '', /^\+?[0-9]{3,20}$/) ? p.sms_smsc : null,
+		sms_psi: p?.sms_psi };
+	if (p?.sms_smsc != null && !u.sms_smsc)
+		push(u.warn, sprintf('sms_smsc %s is not a number, left out', p.sms_smsc));
 
 	let t1 = num(p?.sip_t1_ms), t2 = num(p?.sip_t2_s), exp = num(p?.reg_expires);
 	if (t1)

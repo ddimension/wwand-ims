@@ -16,3 +16,4 @@ tests/ims_mcfg.uc
 tests/sipd_relay.uc
 tests/sipd_profile.uc
 tests/ue_regevent.uc
+tests/ue_smsip.uc

@@ -139,6 +139,18 @@ return view.extend({
 		};
 		o.rmempty = true;
 
+		o = s.option(form.Flag, 'smsip', _('SMS over IMS'),
+			_('The router registers for SMS too. What arrives is stored in the modem like an SMS it received itself (Modem Tools → SMS), and SMS sent through wwand go over IMS. With one number on several SIMs the network may then deliver SMS to the router instead of the phone.'));
+		o.depends('backend', 'ue');
+		o.rmempty = true;
+
+		o = s.option(form.ListValue, 'sms_storage', _('SMS storage'),
+			_('Where an SMS received over IMS is stored.'));
+		o.value('ME', _('Modem memory'));
+		o.value('SM', _('SIM card'));
+		o.default = 'ME';
+		o.depends('smsip', '1');
+
 		o = s.option(form.DynamicList, 'pcscf', _('P-CSCF'),
 			_('Fixed P-CSCF addresses instead of the ones the IMS PDN names.'));
 		o.datatype = 'ipaddr';
@@ -167,6 +179,7 @@ return view.extend({
 		s.tab('sip', _('SIP'));
 		s.tab('security', _('Security'));
 		s.tab('media', _('Calls'));
+		s.tab('sms', _('SMS'));
 
 		o = s.taboption('match', form.Value, 'label', _('Label'));
 		o.rmempty = true;
@@ -211,6 +224,16 @@ return view.extend({
 		o = numeric(s.taboption('media', form.Value, 'alert_delay_ms', _('Ringing delay (ms)'),
 			_('An incoming call: the router reports "ringing" to the network this late, while the LAN phone rings at once. When the number has further SIMs (MultiSIM), a phone in idle is otherwise not alerted. 0 = at once. Keep it below 5000: Telekom gives up on the router after 5.9 s without it.')));
 		o.placeholder = '4500';
+		o = s.taboption('sms', form.Value, 'sms_smsc', _('SMS centre'),
+			_('Default: the one an SMS came from, else the SIM\'s.'));
+		o.datatype = 'and(minlength(3),maxlength(21))';
+		o.placeholder = '+491234567890';
+		o.rmempty = true;
+		o = s.taboption('sms', form.Value, 'sms_psi', _('SMS centre URI'),
+			_('Where outgoing SMS are sent, %s for the centre\'s number. Default: tel:<number>.'));
+		o.placeholder = 'sip:%s@ims.example.net;user=phone';
+		o.rmempty = true;
+
 		o = numeric(s.taboption('media', form.Value, 'rtp_timeout_s', _('RTP timeout (s)'),
 			_('End a call when a side sends no RTP for that long; 0 = never.')));
 		o.placeholder = '30';

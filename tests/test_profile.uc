@@ -65,6 +65,11 @@ eq([ w.user_agent, w.pcscf_port, w.rtp_timeout, w.rtcp_timeout ], [ 'Example-UE/
 	'User-Agent, P-CSCF port, media timeouts (0 = off is kept)');
 eq([ w.t1, w.t2 ], [ 3000, 3000 ], 'T2 never below T1');
 eq([ w.alert_delay, d.alert_delay ], [ 4000, 4500 ], 'alert_delay_ms; 4.5 s without a profile');
+let sp = PROFILE.ue_opts({ sms_smsc: '+4917000000', sms_psi: 'sip:%s@ims.example.net;user=phone' });
+eq([ sp.sms_smsc, sp.sms_psi, d.sms_smsc ], [ '+4917000000', 'sip:%s@ims.example.net;user=phone', null ],
+	'sms_smsc and sms_psi; none without a profile');
+let sp2 = PROFILE.ue_opts({ sms_smsc: '+49 170' });
+ok(sp2.sms_smsc == null && length(filter(sp2.warn, (x) => index(x, 'sms_smsc') == 0)) == 1, 'sms_smsc not a number: left out, warned');
 let long_delay = PROFILE.ue_opts({ alert_delay_ms: '6000' });
 ok(long_delay.alert_delay == 6000 && length(filter(long_delay.warn, (x) => index(x, 'alert_delay_ms 6000') == 0)) == 1,
 	'alert_delay_ms above 5 s: kept, with a warning');

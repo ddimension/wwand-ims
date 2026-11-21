@@ -766,9 +766,43 @@ function create(deps)
 		});
 	});
 
+	// sipd's ubus object, asked asynchronously; deps.sipd_call is the test seam
+	let sipd_call = deps.sipd_call ?? ((method, args, cb) => {
+		if (!bus)
+			try { bus = ubus.connect(); } catch (e) { bus = null; }
+		if (!bus)
+			return cb({ error: 'ubus' }, null);
+		bus.defer('wwand-ims', method, args, (rc, res) => {
+			if (rc != 0)
+				return cb({ error: 'ubus', detail: rc }, null);
+			cb(null, res);
+		});
+	});
+
 	return {
 		// test seam: feed a sipd UE report as if it arrived on `wwand.ims.ue`
 		report_ue: note_ue,
+
+		// wwand's modem_sms_send: over IMS while sipd's UE has SMS over IP on
+		// (ims_modem option smsip) and is registered; else the modem sends it
+		sms_send: (ref, ext, number, text, cb) => {
+			let e = ue_cache[ref];
+			if (!e || (time() - e.at) > 30 || !e.data?.smsip || e.data?.state != 'registered')
+				return false;
+			sipd_call('sms_send', { modem: ref, number: number, text: text }, (err, res) => {
+				if (err)
+					return cb(err, null);
+				if (res?.ok === false) {
+					let r = { ...res };
+					delete r.ok;
+					return cb(r, null);
+				}
+				let r = { ...(res ?? {}) };
+				delete r.ok;
+				cb(null, r);
+			});
+			return true;
+		},
 		// Keeps the clients open, so the indications (and with them the
 		// wwand.ims.* events sipd rings phones on) run from the daemon start
 		// and come back after a modem reset, without anyone calling an op.
