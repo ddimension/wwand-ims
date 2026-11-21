@@ -137,6 +137,10 @@ eq(snap.options, {
 let back = PROFILE.ue_opts({ '.name': snap.name, ...snap.options });
 eq([ back.t1, back.t2, back.expires, back.algs, back.ealgs, back.warn ],
 	[ 1000, 8000, 7190, [ 'hmac-sha-1-96' ], [ 'aes-cbc' ], [] ], 'snapshot: reads back as the same UE values, no warnings');
+let vw = PROFILE.snapshot({ imsi: '262991234567890', vowifi: { opts: { vowifi_rekey_s: '86400' },
+	lists: { vowifi_proposals: [ 'aes256-sha1-modp2048', 'default' ] } } });
+eq([ vw.options.vowifi_rekey_s, vw.options.vowifi_proposals ], [ '86400', [ 'aes256-sha1-modp2048', 'default' ] ],
+	'snapshot: the carrier config\'s VoWiFi settings into the new profile');
 let bare = PROFILE.snapshot({ imsi: '310150123456789' });
 eq([ bare.name, bare.options.match_imsi, bare.options.sip_t1_ms, bare.options.mbn ], [ 'op_31015', [ '31015' ], '500', null ],
 	'snapshot: little known -> the IMSI prefix, the UE defaults');

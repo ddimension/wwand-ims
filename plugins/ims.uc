@@ -36,13 +36,36 @@ function ue_status_row(j)
 		return null;
 	let num = match(j.impu ?? '', /sip:(\+?[0-9]+)@/)?.[1];
 	let active = +(j.calls ?? 0);
+	// the way to the IMS (sipd's `access`): VoWiFi over the ePDG tunnel,
+	// VoLTE over the modem's IMS PDN
+	let way = { vowifi: 'VoWiFi', volte: 'VoLTE' }[j.access];
 	let text = (j.state == 'registered')
-		? sprintf('registered%s%s%s', num ? ' ' + num : '',
+		? sprintf('registered%s%s%s%s', num ? ' ' + num : '',
+		          way ? ' over ' + way : '',
 		          j.pcscf ? ' via ' + j.pcscf : '',
 		          active ? sprintf(', %d call(s)', active) : '')
-		: (j.state ?? 'down');
+		: sprintf('%s%s', j.state ?? 'down', way ? ' (' + way + ')' : '');
 	return { label: 'IMS UE', text: text,
 	         level: (j.state == 'registered') ? 'ok' : 'warn' };
+}
+
+// the VoWiFi tunnel of a sipd UE report (its `vowifi` member), as a row
+function vowifi_status_row(j)
+{
+	let v = (type(j) == 'object') ? j.vowifi : null;
+	if (type(v) != 'object')
+		return null;
+	let inner = join(' ', filter([ v.v6, v.v4 ], (x) => x));
+	let text;
+	if (v.state == 'up')
+		text = sprintf('up to %s%s%s', v.epdg ?? '?', length(inner) ? ', inner ' + inner : '',
+			length(v.pcscf ?? []) ? sprintf(', %d P-CSCF', length(v.pcscf)) : '');
+	else if (v.state == 'connecting')
+		text = sprintf('connecting to %s', v.epdg ?? '?');
+	else
+		text = sprintf('%s%s%s', v.state ?? 'down', v.error ? ': ' + v.error : '',
+			+(v.tries ?? 0) ? sprintf(' (%d failed attempts)', +v.tries) : '');
+	return { label: 'VoWiFi', text: text, level: (v.state == 'up') ? 'ok' : 'warn' };
 }
 
 // ---- schemas (libqmi 1.38)---------------------------------------------
@@ -488,6 +511,12 @@ function create(deps)
 			return null;
 		return ue_status_row(e.data);
 	};
+	let vowifi_report = (ref) => {
+		let e = ue_cache[ref];
+		if (!e || (time() - e.at) > 30)
+			return null;
+		return vowifi_status_row(e.data);
+	};
 	try {
 		if (!bus)
 			bus = ubus.connect();
@@ -854,6 +883,10 @@ function create(deps)
 			let ue = ue_report(ref);
 			if (ue)
 				push(rows, ue);
+			// its VoWiFi tunnel, when the UE reaches the IMS that way
+			let vw = vowifi_report(ref);
+			if (vw)
+				push(rows, vw);
 
 			// the modem's own IMS stack, when it is on (off in the UE design)
 			if (s?.reg) {

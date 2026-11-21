@@ -177,7 +177,15 @@ function setup_sections(o)
 		          ip6table: sprintf('%d', vw.table), peerdns: '0', delegate: '0' } },
 	] : [];
 
+	// the SIM's operator profile with the VoWiFi settings of the carrier
+	// config (only what is missing is added: a value set there wins)
+	let prof = (vw && o.iwlan && (length(keys(o.iwlan.opts ?? {})) || length(keys(o.iwlan.lists ?? {})))) ? [
+		{ config: 'wwand_ims', name: o.profile_name, type: 'ims_profile',
+		  opts: { ...(o.profile_new ?? {}), ...o.iwlan.opts }, lists: o.iwlan.lists },
+	] : [];
+
 	return [
+		...prof,
 		{ config: 'network', name: vrf, type: 'device',
 		  opts: { type: 'vrf', name: vrf, table: table }, lists: { ports: [ ifc ] } },
 		{ config: 'network', name: vrf + '_vrf', type: 'interface', opts: { proto: 'none', device: vrf } },
@@ -210,9 +218,14 @@ function section_plan(want, have)
 	if (have == null)
 		return { action: 'create', diff: [], missing: [] };
 	let diff = [], missing = [];
-	for (let k, v in want.opts)
-		if (have[k] != v)
+	for (let k, v in want.opts) {
+		// an option not set there yet is added, one set otherwise is the
+		// user's (kept, --force sets ours)
+		if (have[k] == null)
+			push(missing, [ k, v ]);
+		else if (have[k] != v)
 			push(diff, [ k, have[k], v ]);
+	}
 	for (let k, v in want.lists ?? {}) {
 		let h = have[k];
 		h = (type(h) == 'array') ? h : (h != null ? split(h, ' ') : []);
@@ -653,6 +666,23 @@ function cmd_fix(ctx, modem, m, opts)
 	printf('reset sent; the interfaces come back on their own\n');
 }
 
+// ---- VoWiFi from the carrier config (ctl/iwlan.uc) ------------------------------------
+const UE_LIB_PATH = '/usr/share/wwand-ims';
+// The reader is bytecode under /usr/share/wwand-ims, which wwandctl's
+// search path does not hold: added once, then the plain lazy script whose
+// imports load it (require() reads source only)
+let _iwlan = null;
+function iwlan_lib()
+{
+	if (_iwlan)
+		return _iwlan;
+	let p = UE_LIB_PATH + '/*.uc';
+	if (type(REQUIRE_SEARCH_PATH) == 'array' && index(REQUIRE_SEARCH_PATH, p) < 0)
+		push(REQUIRE_SEARCH_PATH, p);
+	_iwlan = require('ims_iwlan_lazy').IW;
+	return _iwlan;
+}
+
 function cmd_setup(ctx, modem, m, opts)
 {
 	let uci = require('uci');
@@ -683,8 +713,33 @@ function cmd_setup(ctx, modem, m, opts)
 	    fs.stat('/usr/share/wwand-ims/vowifi_lazy.uc') != null))
 		vw = { table: +(im.vowifi_table ?? 31), dev: im.vowifi_dev ?? 'imswifi0',
 		       iface: im.vowifi_iface ?? 'wwvowifi', if_id: +(im.vowifi_if_id ?? 7001), mtu: +(im.vowifi_mtu ?? 1280) };
+	// VoWiFi: the carrier config's IWLAN settings into the SIM's operator
+	// profile (that one, or a new one for the SIM's PLMN)
+	let iw = null, pname = null, pnew = null;
+	if (vw) {
+		let IW = iwlan_lib();
+		let src = IW.read(try_call, modem, opts);
+		let x = IW.parse(src.xml);
+		iw = IW.options(x);
+		printf('VoWiFi settings of the carrier config (via %s): %s\n', src.via,
+			x ? sprintf('%J', { ...iw.opts, ...iw.lists })
+			  : sprintf('none%s — the profile keeps its own or the built-in ones', src.why ? ' (' + src.why + ')' : ''));
+		let best = null, blen = 0;
+		cur.foreach('wwand_ims', 'ims_profile', (p) => {
+			for (let pre in (type(p.match_imsi) == 'array') ? p.match_imsi : split(p.match_imsi ?? '', ' '))
+				if (length(pre) && index(m.imsi ?? '', pre) == 0 && length(pre) > blen) {
+					best = p['.name'];
+					blen = length(pre);
+				}
+		});
+		let mnc = +(im.mnc_len ?? 2);
+		pname = best ?? sprintf('mbn_%s', substr(m.imsi ?? '00000', 0, 3 + mnc));
+		if (!best)
+			pnew = { label: s.mbn?.name ?? pname, match_imsi: substr(m.imsi ?? '', 0, 3 + mnc) };
+	}
 	let want = setup_sections({ modem: modem, profile: s.ims, iface: opts.iface, table: opts.table,
-	                            rtp: sprintf('%d-%d', rb, rb + rs - 1), vowifi: vw });
+	                            rtp: sprintf('%d-%d', rb, rb + rs - 1), vowifi: vw,
+	                            iwlan: iw, profile_name: pname, profile_new: pnew });
 	let todo = [];
 	for (let w in want) {
 		// sipd reads the first ims_modem section, whatever its name: that one
@@ -723,8 +778,10 @@ function cmd_setup(ctx, modem, m, opts)
 		let have = cur.get_all(w.config, w.name);
 		if (!have && !cur.set(w.config, w.name, w.type))
 			push(failed, sprintf('%s.%s', w.config, w.name));
-		for (let k, v in w.only_lists ? {} : w.opts)
-			if (!cur.set(w.config, w.name, k, v))
+		// only_lists: what is missing only — options not set there yet, and
+		// list entries; the user's own values stay
+		for (let k, v in w.opts)
+			if ((!w.only_lists || have?.[k] == null) && !cur.set(w.config, w.name, k, v))
 				push(failed, sprintf('%s.%s.%s', w.config, w.name, k));
 		// lists: what is there stays, the missing entries are added
 		for (let k, v in w.lists ?? {}) {
@@ -869,6 +926,7 @@ function cmd_ims(ctx, args)
 		case '--apply': opts.apply = true; break;
 		case '--force': opts.force = true; break;
 		case '--vowifi': opts.vowifi = true; break;
+		case '--mbn': opts.mbn = rest[++i]; break;
 		case '--no-vowifi': opts.vowifi = false; break;
 		case '--no-reset': opts.no_reset = true; break;
 		case '--keep-modem-ims': opts.keep_modem_ims = true; break;
@@ -892,7 +950,7 @@ return {
 	help: [
 		'ims [modem] check                      what the router\'s own IMS UE needs (modem + router)',
 		'ims [modem] fix [--no-reset]           VoLTE FGIs on, the modem\'s own IMS off (Quectel)',
-		'ims [modem] setup [--apply] [--force] [--vowifi|--no-vowifi]  IMS PDN (+ VoWiFi) + VRF + firewall + sipd line from the MBN; run again it adds what is missing',
+		'ims [modem] setup [--apply] [--force] [--vowifi|--no-vowifi] [--mbn FILE]  IMS PDN (+ VoWiFi, its ePDG settings from the carrier config) + VRF + firewall + sipd line from the MBN; run again it adds what is missing',
 		'ims [modem] mbn [list|patch|upload]    the VoLTE FGIs into the carrier MBN, load it (new or --replace)',
 		'ims [modem] call <number> [--no-echo]  one test VoLTE call from the router UE (--talk/--ring/--hold S)',
 	],
@@ -904,5 +962,7 @@ return {
 		fgi_parse: fgi_parse, fgi_plan: fgi_plan, qcfg_ims: qcfg_ims, cgdcont_parse: cgdcont_parse,
 		ims_profile: ims_profile, pdp_option: pdp_option, setup_sections: setup_sections,
 		section_plan: section_plan, num_list: num_list, fgi_merge: fgi_merge,
+		iwlan_parse: (x) => iwlan_lib().parse(x), iwlan_options: (x) => iwlan_lib().options(x),
+		iwlan_proposal: (e, i, d) => iwlan_lib().proposal(e, i, d),
 	},
 };

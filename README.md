@@ -17,6 +17,13 @@ modem's IMS PDN (IMS-AKA through the card, sec-agree ESP, SIP), the modem's own
 IMS is switched off, and sipd relays RTP to the LAN. `wwandctl status` shows the
 registration; `wwandctl ims call <number>` places a test call.
 
+Since 2026-11-21 also on the NR7101 (RG502Q): **VoWiFi** — the same UE
+through an IKEv2/EAP-AKA tunnel to the operator's ePDG over the fixed-line
+WAN (package `wwand-ims-vowifi`): Telekom DE with incoming calls and audio,
+Vodafone DE registered;
+one number on two SIMs (MultiSIM) rings both devices; SMS over IP into the
+modem's store; a LuCI app (`luci-app-wwand-ims`).
+
 The alternative **modem-IMS backend** (`plugins/ims.uc`, backend `qmi`) drives
 the module's own IMS over QMI; it is why the plugin exists, but on the RG650E
 the module refuses every outgoing call internally — hence the router-UE
@@ -55,10 +62,13 @@ There are two ways to set them, and they are not equal:
 | `ue/reg.uc`, `ue/call.uc`, `ue/regevent.uc` | ucode | the UE's registration, one call, and its reg-event subscription (the network ending the registration is noticed) |
 | `plugins/ims.uc` | ucode, inside the wwand daemon | the modem-IMS backend: IMS state and call control over QMI |
 | `ctl/ims.uc` | ucode (wwandctl) | `wwandctl ims check\|fix\|setup\|mbn\|call` — prepares the modem and the router |
-| `sipd/` | ucode | SIP registrar + B2BUA; backend `ue` is the router's own IMS UE (operator profile by SIM, P-CSCF failover, RTP relay with a media watchdog), backend `qmi` bridges to the plugin |
+| `sipd/` | ucode | SIP registrar + B2BUA; backend `ue` is the router's own IMS UE (operator profile by SIM, P-CSCF failover, RTP relay with a media watchdog, forwarding info to the LAN), backend `qmi` bridges to the plugin |
+| `ue/smsip.uc` | ucode | SMS over IP (TS 24.341), stored in the modem through wwand |
+| `vowifi/` | ucode | package `wwand-ims-vowifi`: the ePDG tunnel (strongSwan over vici, EAP-AKA on the USIM), kept up; netifd configures its interface |
+| `luci/` | JavaScript | package `luci-app-wwand-ims`: status, call list, settings, operator profiles |
 | `src/mcfg/` | C | MBN (MCFG) inspection (SHA-2 so far) |
 | `tools/` | sh, ucode, python | the UE driver (`ims-register.uc`), call tests, EFS snapshots, modem F3 tracing |
-| `files/` | | example config, init script, IMS-PDN network/firewall example, Asterisk example |
+| `files/` | | example config, init script, IMS-PDN + VoWiFi network/firewall example, the netifd proto `wwandvowifi`, Asterisk example |
 
 The NETLINK_XFRM binding sec-agree needs lives in wwand core's own
 `wwand_io.so` (sub-namespace `xfrm`); wwand-ims' earlier standalone C module

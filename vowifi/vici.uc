@@ -19,6 +19,7 @@
 //   VICI.encode(obj) -> bytes            VICI.decode(bytes) -> obj | null
 //   VICI.packet(type, name, obj) -> the framed bytes
 //   let c = VICI.create({ socket, uloop, path, log, on_close })
+//     c.reset(why): drop the connection (a watchdog), the next request reconnects
 //     on_close(why): charon closed the connection (restarted, crashed); the
 //     next request connects again and registers the listeners anew
 //   c.request(cmd, msg, cb(err, res))    one at a time, queued
@@ -322,6 +323,16 @@ export function create(o)
 		self.closed = true;
 		listeners = {};
 		drop(null);
+	};
+
+	// give up on the connection (an owner's watchdog: an answer that never
+	// comes): what waits fails, the next request connects anew and
+	// registers the listeners again. Not reported as on_close.
+	self.reset = function(why) {
+		let was = self.closed;
+		self.closed = true;
+		drop(why ?? 'reset');
+		self.closed = was;
 	};
 
 	return self;

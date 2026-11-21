@@ -23,6 +23,9 @@ import * as CALL from 'ue_call';
 import * as LINE from 'sipd_line_ue';
 import * as RELAY from 'sipd_relay';
 import * as PROFILE from 'sipd_profile';
+import * as IW from 'ims_iwlan';
+import * as KC from 'ue_kcrypto';
+import { DEFAULT_ALGS, DEFAULT_EALGS } from 'ue_secagree';
 import * as logmod from 'wwand.log';
 import * as sms_pdu from 'wwand.sms_pdu';
 
@@ -186,6 +189,8 @@ const UE_EVENT = 'wwand.ims.ue';
 // ---- the UE line (backend 'ue') -------------------------------------------------------------
 
 let core = null, line = null, relay = null, vowifi = null;
+// the kernel crypto check (ue/kcrypto.uc), backend ue
+let kc_opts = null;
 
 // ims_modem option access 'vowifi': the UE's IMS goes through an IKEv2
 // tunnel to the operator's ePDG instead of the IMS PDN (wwand-ims-vowifi,
@@ -216,6 +221,7 @@ if (backend == 'ue' && access == 'vowifi') {
 	let p = PROFILE.select(profiles, im.profile, { imsi: m.imsi, iccid: m.iccid }) ?? {};
 	let opt = (name) => im[name] ?? p[name];
 	let lst = (name) => length(PROFILE.list_of(opt(name))) ? PROFILE.list_of(opt(name)) : null;
+	let num_opt = (name) => (opt(name) != null && match(sprintf('%s', opt(name)), /^[0-9]+$/)) ? +opt(name) : null;
 	// charon restarted or crashed: the controller loads the tunnel again
 	let vici = VICI.create({ socket: socket, uloop: uloop, log: log, on_close: (why) => vowifi?.vici_closed(why) });
 	// the netifd interface (proto wwandvowifi) that takes the tunnel's IP
@@ -230,7 +236,10 @@ if (backend == 'ue' && access == 'vowifi') {
 		if_id: +(im.vowifi_if_id ?? 7001), dev: im.vowifi_dev ?? 'imswifi0',
 		epdg: im.epdg ?? p.vowifi_epdg, apn: opt('vowifi_apn'),
 		proposals: lst('vowifi_proposals'), esp_proposals: lst('vowifi_esp_proposals'),
-		remote_auth: opt('vowifi_remote_auth'), pani: opt('vowifi_pani') });
+		remote_auth: opt('vowifi_remote_auth'), pani: opt('vowifi_pani'),
+		rekey_s: num_opt('vowifi_rekey_s'), esp_rekey_s: num_opt('vowifi_esp_rekey_s'), dpd_s: num_opt('vowifi_dpd_s'),
+		// charon's detail for the tunnel's setup, 0-4 (2: every IKE step)
+		loglevel: im.vowifi_loglevel != null ? +im.vowifi_loglevel : 1 });
 	// the UE registers once netifd has the tunnel's address and route
 	// (its ifup / ifupdate of the interface), not at its next retry and not
 	// before: an earlier REGISTER finds no route ("Network unreachable")
@@ -246,12 +255,55 @@ if (backend == 'ue') {
 		log('error', 'sipd: backend ue needs wwand_io.xfrm (install/upgrade wwand)');
 		exit(1);
 	}
+	// can the kernel do the encrypted sec-agree SAs we offer? A crypto driver
+	// that cannot take their keys (MT7621's EIP-93) is unloaded now, before
+	// the VoWiFi tunnel uses it (ue/kcrypto.uc)
+	let combos = [];
+	for (let a in DEFAULT_ALGS)
+		for (let e in DEFAULT_EALGS)
+			push(combos, [ a, e ]);
+	kc_opts = { xfrm: xfrm, exists: (p) => fs.stat(p) != null, run: (argv) => system(argv), log: log, combos: combos };
+	// a module still in use is tried again for a while: the kernel frees the
+	// SAs of a tunnel just taken down, and their crypto, only later (xfrm
+	// state GC); a running VoWiFi tunnel holds the module through its own
+	// cbc(aes), so the tunnel starts only after this
+	let kc_settle = (cb) => {
+		let n = 0, quiet = { ...kc_opts, log: (l, m) => null }, step;
+		step = () => {
+			let r = KC.check(n == 0 ? kc_opts : quiet);
+			if (r.busy && ++n < 15)
+				return uloop.timer(1000, step);
+			if (r.busy)
+				log('warn', sprintf('ue: %s still in use after %d s; encrypted sec-agree stays refused', r.busy, n));
+			else if (n > 0 && r.unloaded)
+				log('warn', sprintf('ue: kernel module %s unloaded after %d s', r.unloaded, n));
+			cb?.();
+		};
+		step();
+	};
+	kc_opts.settle = kc_settle;
+	// ... and again when a registration finds it refused anyway: the VoWiFi
+	// tunnel is taken down for it (once a minute at most)
+	let kc_last = 0;
+	kc_opts.refused = () => {
+		if (time() - kc_last < 60)
+			return;
+		kc_last = time();
+		let r = KC.check(kc_opts);
+		if (r.busy && vowifi) {
+			log('warn', sprintf('ue: taking the VoWiFi tunnel down to unload %s', r.busy));
+			vowifi.stop(() => kc_settle(() => vowifi.start(null)));
+		}
+		else if (r.busy)
+			kc_settle(null);
+	};
 	relay = RELAY.create({ socket: socket, uloop: uloop, lan_ip: listen_ip,
 		ims_ip: () => line?.ue_addr(), vrf: () => vowifi ? vowifi.access()?.bind : im.vrf, log: log,
 		base: +(im.rtp_base ?? 40000), span: +(im.rtp_span ?? 200),
 		rtp_timeout: () => line?.profile()?.rtp_timeout,
 		rtcp_timeout: () => line?.profile()?.rtcp_timeout });
 	line = LINE.create({ bus: bus, uloop: uloop, socket: socket, xfrm: xfrm,
+		on_xfrm_refused: (err) => kc_opts.refused(),
 		modem: modem, iface: im.ims_iface ?? 'wwims', vrf: im.vrf,
 		// the APN to find the IMS PDN's line in AT+CGCONTRDP: config, else the
 		// interface's own option apn
@@ -374,12 +426,17 @@ let ubus_obj = bus.publish('wwand-ims', {
 						mbn = c.description ?? c.name;
 			let diag = bus.call('wwand', 'modem_plugin', { modem: modem, plugin: 'ims', op: 'diag', args: {} });
 			let csca = bus.call('wwand', 'modem_at', { modem: modem, command: 'AT+CSCA?', timeout: 3000 });
+			// the VoWiFi settings of the carrier config (its iwlan_s2b_config.xml:
+			// over AT+QNVFR, else DIAG)
+			let iw = IW.read((method, args) => bus.call('wwand', method, args), modem, {});
+			let vowifi = IW.options(IW.parse(iw.xml));
 			let lt = localtime();
-			let snap = PROFILE.snapshot({ imsi: m.imsi, plmn: m.registration?.plmn, mbn: mbn, ims_apn: ims_apn,
+			let snap = PROFILE.snapshot({ imsi: m.imsi, plmn: m.registration?.plmn, mbn: mbn, ims_apn: ims_apn, vowifi: vowifi,
 				selection: diag?.selection, ue: line?.status(), prof: line?.profile(),
 				smsc: LINE.smsc_from_csca(csca?.response),
 				date: sprintf('%04d-%02d-%02d', lt.year, lt.mon, lt.mday) });
 			return { ok: true, ...snap, sources: { mbn: mbn != null, ims_profile: ims_apn != null,
+				vowifi: iw.xml != null ? iw.via : null,
 				selection: diag?.selection != null, registered: line?.status()?.state == 'registered' } };
 		},
 	},
@@ -407,6 +464,14 @@ let emit_ue_status = (state) => {
 	if (!line)
 		return;
 	let s = (state != null) ? { state: state } : line.status();
+	// how the UE reaches the IMS: VoWiFi (the ePDG tunnel) or VoLTE (the
+	// modem's IMS PDN)
+	s.access = vowifi ? 'vowifi' : 'volte';
+	// the VoWiFi tunnel too (wwandctl status shows it in a row of its own)
+	if (vowifi) {
+		let v = vowifi.status();
+		s.vowifi = { state: v.state, epdg: v.epdg, v4: v.v4, v6: v.v6, pcscf: v.pcscf, error: v.error, tries: v.tries };
+	}
 	try { bus.event(UE_EVENT, { modem: modem, backend: backend, updated: time(), ...s }); }
 	catch (e) {}
 };
@@ -417,7 +482,8 @@ if (line) {
 	// over VoWiFi the tunnel first: the controller keeps it up from here
 	// on, the line registers when netifd has its address (or retries)
 	if (vowifi) {
-		vowifi.start(null);
+		// after the crypto check (a faulty driver module unloaded first)
+		kc_opts ? kc_opts.settle(() => vowifi.start(null)) : vowifi.start(null);
 		bus.listener('network.interface', (type, data) => {
 			if (data?.interface == vowifi.iface && (data?.action == 'ifup' || data?.action == 'ifupdate') && vowifi.access())
 				line?.retry_now();

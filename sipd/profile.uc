@@ -246,6 +246,13 @@ export function snapshot(src)
 	if (prof.sms_psi)
 		o.sms_psi = prof.sms_psi;
 
+	// VoWiFi: the carrier config's IWLAN settings (ims_iwlan options():
+	// { opts, lists })
+	for (let k, v in src?.vowifi?.opts ?? {})
+		o[k] = v;
+	for (let k, v in src?.vowifi?.lists ?? {})
+		o[k] = v;
+
 	// a uci section name: letters, digits, underscore
 	let name = lc(replace(who, /[^A-Za-z0-9]+/g, '_'));
 	name = replace(replace(name, /^_+/, ''), /_+$/, '');

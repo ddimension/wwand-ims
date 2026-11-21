@@ -20,7 +20,7 @@
 #
 # Only ES modules (top-level `export`) and programs can be bytecode. The
 # require()d scripts (top-level `return`: the wwand plugin, the wwandctl
-# command, sipd_core, sipd_sip, ims_mcfg) ship as source in either mode,
+# command, sipd_core, sipd_sip, ims_mcfg, ims_iwlan_lazy) ship as source in either mode,
 # because require() reads source at runtime.
 #
 # The compiling ucode must be the revision of the target's runtime: bytecode is
@@ -49,6 +49,7 @@ set(IMS_UCODE_MODULES
   ue/regevent.uc=wwand-ims/ue_regevent.uc
   ue/smsip.uc=wwand-ims/ue_smsip.uc
   ue/secagree.uc=wwand-ims/ue_secagree.uc
+  ue/kcrypto.uc=wwand-ims/ue_kcrypto.uc
   sipd/line_ue.uc=wwand-ims/sipd_line_ue.uc
   sipd/profile.uc=wwand-ims/sipd_profile.uc
   sipd/relay.uc=wwand-ims/sipd_relay.uc
@@ -56,6 +57,8 @@ set(IMS_UCODE_MODULES
   vowifi/card.uc=wwand-ims-vowifi/vowifi_card.uc
   vowifi/tunnel.uc=wwand-ims-vowifi/vowifi_tunnel.uc
   vowifi/ctl.uc=wwand-ims-vowifi/vowifi_ctl.uc
+  ctl/diag.uc=wwand-ims/ims_diag.uc
+  ctl/iwlan.uc=wwand-ims/ims_iwlan.uc
 )
 
 # programs (shebang) -> -c, the interpreter line is kept
@@ -71,6 +74,7 @@ set(IMS_UCODE_PLAIN
   plugins/ims.uc=wwand/plugins/ims.uc
   ctl/ims.uc=wwand/ctl/ims.uc
   ctl/mcfg.uc=wwand/ims_mcfg.uc
+  ctl/iwlan_lazy.uc=wwand-ims/ims_iwlan_lazy.uc
   sipd/core.uc=wwand-ims/sipd_core.uc
   sipd/sip.uc=wwand-ims/sipd_sip.uc
   vowifi/lazy.uc=wwand-ims-vowifi/vowifi_lazy.uc

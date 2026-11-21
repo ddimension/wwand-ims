@@ -163,6 +163,25 @@ eq(length(inst.status('m0')), 2, 'a UE report for another modem is not mixed in'
 inst.report_ue({ modem: 'm0', state: 'down' });
 eq(inst.status('m0')[0], { label: 'IMS UE', text: 'down', level: 'warn' }, 'UE row: down is shown, not hidden');
 
+// a UE over VoWiFi: its tunnel in a row of its own, after the UE's
+inst.report_ue({ modem: 'm0', state: 'registered', impu: 'sip:+4915550000001@ims.example.net', pcscf: '2001:db8:ff::5',
+                 access: 'vowifi', vowifi: { state: 'up', epdg: 'epdg.example.net', v6: '2001:db8:aa::2', pcscf: [ '2001:db8:ff::5', '2001:db8:ff::6' ] } });
+rows = inst.status('m0');
+eq(rows[0].text, 'registered +4915550000001 over VoWiFi via 2001:db8:ff::5', 'UE row: registered over VoWiFi');
+eq(rows[1], { label: 'VoWiFi', text: 'up to epdg.example.net, inner 2001:db8:aa::2, 2 P-CSCF', level: 'ok' },
+	'VoWiFi row: up, the ePDG, the inner address, the P-CSCFs');
+inst.report_ue({ modem: 'm0', state: 'down', vowifi: { state: 'down', epdg: 'epdg.example.net', error: 'charon: IKE SA down', tries: 2 } });
+eq(inst.status('m0')[1], { label: 'VoWiFi', text: 'down: charon: IKE SA down (2 failed attempts)', level: 'warn' },
+	'VoWiFi row: down with the reason and the attempts');
+inst.report_ue({ modem: 'm0', state: 'down', vowifi: { state: 'connecting', epdg: 'epdg.example.net' } });
+eq(inst.status('m0')[1].text, 'connecting to epdg.example.net', 'VoWiFi row: connecting');
+inst.report_ue({ modem: 'm0', state: 'down' });
+eq(inst.status('m0')[1].label, 'IMS', 'no VoWiFi in the report (IMS PDN): no VoWiFi row');
+inst.report_ue({ modem: 'm0', state: 'registered', impu: 'sip:+4915550000001@ims.example.net', pcscf: '2001:db8:ff::5', access: 'volte' });
+eq(inst.status('m0')[0].text, 'registered +4915550000001 over VoLTE via 2001:db8:ff::5', 'UE row: registered over VoLTE');
+inst.report_ue({ modem: 'm0', state: 'down', access: 'vowifi' });
+eq(inst.status('m0')[0].text, 'down (VoWiFi)', 'UE row: down, and over which way it tries');
+
 // SMS over IMS: the plugin takes wwand's modem_sms_send while the UE has smsip on and is registered
 let sms_r = null, sms_e = null;
 let sms_cb = (e, r) => { sms_e = e; sms_r = r; };

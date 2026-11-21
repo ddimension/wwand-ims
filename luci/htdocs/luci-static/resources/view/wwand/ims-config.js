@@ -188,6 +188,16 @@ return view.extend({
 		o.rmempty = true;
 		o.depends('access', 'vowifi');
 
+		o = s.option(form.ListValue, 'vowifi_loglevel', _('Tunnel log detail'),
+			_('How much of the tunnel setup (IKEv2, EAP-AKA) strongSwan reports to the system log. 2 shows every IKE step; for debugging.'));
+		o.value('', _('Normal (1)'));
+		o.value('0', _('Quiet (0)'));
+		o.value('2', _('Every IKE step (2)'));
+		o.value('3', _('Raw (3)'));
+		o.value('4', _('With keys (4) — never in normal operation'));
+		o.rmempty = true;
+		o.depends('access', 'vowifi');
+
 		o = s.option(widgets.NetworkSelect, 'ims_iface', _('IMS interface'),
 			_('The interface (proto wwand) of the IMS PDN.'));
 		o.nocreate = true;
@@ -356,7 +366,7 @@ return view.extend({
 		o.datatype = 'host';
 		o.rmempty = true;
 		o = s.taboption('vowifi', form.Value, 'vowifi_apn', _('APN (IDr)'),
-			_('Sent as the IKE responder identity. Default: none (an ePDG that answers with its own identity would be refused otherwise).'));
+			_('Sent as the IKE responder identity (TS 24.302). Default: ims; %any sends none. The identity the ePDG answers with is accepted (strongSwan plugin epdg-idr).'));
 		o.rmempty = true;
 		o = s.taboption('vowifi', form.DynamicList, 'vowifi_proposals', _('IKE proposals'),
 			_('strongSwan notation. Default: aes256-sha512-modp4096, then charon\'s defaults.'));
@@ -370,6 +380,15 @@ return view.extend({
 		o = s.taboption('vowifi', form.Value, 'vowifi_pani', _('P-Access-Network-Info'));
 		o.placeholder = 'IEEE-802.11';
 		o.rmempty = true;
+		o = numeric(s.taboption('vowifi', form.Value, 'vowifi_rekey_s', _('IKE rekeying (s)'),
+			_('0 or empty: no rekeying. wwandctl ims setup takes it from the carrier config.')));
+		o.placeholder = '0';
+		o = numeric(s.taboption('vowifi', form.Value, 'vowifi_esp_rekey_s', _('ESP rekeying (s)'),
+			_('0 or empty: no rekeying.')));
+		o.placeholder = '0';
+		o = numeric(s.taboption('vowifi', form.Value, 'vowifi_dpd_s', _('Dead peer detection (s)'),
+			_('0: off.')));
+		o.placeholder = '60';
 
 		o = numeric(s.taboption('media', form.Value, 'rtp_timeout_s', _('RTP timeout (s)'),
 			_('End a call when a side sends no RTP for that long; 0 = never.')));

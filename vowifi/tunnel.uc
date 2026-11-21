@@ -21,7 +21,8 @@
 // Telekom DE (HW, 2026-11-21): MODP_4096 for the key exchange, IDr and an
 // EAP-AKA request in the first IKE_AUTH answer, no certificate (EAP-only,
 // RFC 5998). The P-CSCF request needs charon.plugins.p-cscf.enable.<CONN>,
-// a setting vici cannot carry: files/vowifi-strongswan.conf (it names our
+// accepting the ePDG's own IDr charon.plugins.epdg-idr.connections — two
+// settings vici cannot carry: files/vowifi-strongswan.conf (it names our
 // connection only; charon's global settings stay untouched).
 
 'use strict';
@@ -53,7 +54,8 @@ export function nai(imsi, plmn)
 }
 
 // The vici load-conn message (strongSwan's swanctl.conf keys, as a tree).
-// o: { imsi, plmn, epdg?, apn?, if_id, proposals?, esp_proposals?, remote_auth? }
+// o: { imsi, plmn, epdg?, apn?, if_id, proposals?, esp_proposals?, remote_auth?,
+//      rekey_s?, esp_rekey_s?, dpd_s? }
 export function conn_config(o)
 {
 	let id = nai(o.imsi, o.plmn);
@@ -66,8 +68,10 @@ export function conn_config(o)
 		if_id_out: sprintf('%d', o.if_id),
 		encap: 'yes',
 		mobike: 'no',
-		dpd_delay: '60s',
-		rekey_time: '0s',
+		// from the carrier config's iwlan settings where it has them
+		// (vowifi_dpd_s, vowifi_rekey_s), else no rekeying (Telekom DE)
+		dpd_delay: sprintf('%ds', o.dpd_s ?? 60),
+		rekey_time: sprintf('%ds', o.rekey_s ?? 0),
 		unique: 'replace',
 		send_certreq: 'no',
 		local: {
@@ -81,18 +85,21 @@ export function conn_config(o)
 			// certificate; 'pubkey' fails "constraint requires public key
 			// authentication"); a profile may ask for pubkey instead
 			auth: o.remote_auth ?? 'eap-aka',
-			// the APN as IDr (TS 24.302 7.2.2) only when a profile names one:
-			// charon sends this id AND requires the ePDG to answer with it,
-			// and Telekom's answers 'nai.epc.mnc001.mcc262.3gppnetwork.org'
-			// to an IDr 'ims' (HW 2026-11-21); %any sends no IDr
-			id: o.apn ?? '%any',
+			// the IMS APN as IDr (TS 24.302 7.2.2), a profile's vowifi_apn
+			// over it, '%any' for none. An ePDG answers with an identity of
+			// its own (Telekom DE 'nai.epc.mnc001.mcc262.3gppnetwork.org',
+			// Vodafone DE its FQDN; HW 2026-11-21), which charon refuses
+			// unless the feed's epdg-idr plugin is on for CONN
+			// (files/vowifi-strongswan.conf): Vodafone DE refuses a request
+			// without IDr (N(10500) NETWORK_FAILURE)
+			id: o.apn ?? 'ims',
 		},
 		children: {
 			ims: {
 				local_ts: [ '0.0.0.0/0', '::/0' ],
 				remote_ts: [ '0.0.0.0/0', '::/0' ],
 				mode: 'tunnel',
-				rekey_time: '0s',
+				rekey_time: sprintf('%ds', o.esp_rekey_s ?? 0),
 				dpd_action: 'restart',
 				close_action: 'restart',
 			},

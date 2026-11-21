@@ -83,6 +83,44 @@ d = T.section_plan(vb['firewall.ims'], { name: 'ims', input: 'REJECT', output: '
 	network: [ 'wwims' ], device: [ 'ims' ] });
 eq([ d.action, d.missing ], [ 'add', [ [ 'network', 'imswifi0' ], [ 'network', 'wwvowifi' ] ] ], 'setup vowifi: afterwards -> add the missing entries');
 
+// ---- VoWiFi settings from the carrier config (iwlan_s2b_config.xml) ------------------
+// a hand-made file of the structure Qualcomm's carrier configs carry
+let IW = '<?xml version="1.0" ?>\n<IWLAN_S2B_CONFIG>\n  <GENERIC_VARIANT>\n    <epdg_addr_info>\n' +
+	'      <static_fqdn_enabled>FALSE</static_fqdn_enabled>\n    </epdg_addr_info>\n    <ikev2_info>\n' +
+	'      <peer_id>\n        <id_type>ID_FQDN</id_type>\n        <identifier/>\n      </peer_id>\n' +
+	'      <ikev2_hash_algo_list>\n        <algo value="12"/>\n        <algo value="2"/>\n      </ikev2_hash_algo_list>\n' +
+	'      <ikev2_dh_group_list>\n        <dh_group value="14"/>\n        <dh_group value="5"/>\n      </ikev2_dh_group_list>\n' +
+	'      <esp_auth_algo_list>\n        <algo value="2"/>\n      </esp_auth_algo_list>\n' +
+	'      <ikev2_sa_rekey_timer>\n        <soft_sec>86400</soft_sec>\n        <hard_sec>86500</hard_sec>\n      </ikev2_sa_rekey_timer>\n' +
+	'      <esp_rekey_timer>\n        <soft_sec>14400</soft_sec>\n      </esp_rekey_timer>\n' +
+	'      <dpd_info>\n        <liveness_check_enabled>TRUE</liveness_check_enabled>\n      </dpd_info>\n' +
+	'    </ikev2_info>\n  </GENERIC_VARIANT>\n  <WP_VARIANT>\n    <ikev2_info>\n      <esp_auth_algo_list>\n' +
+	'        <algo value="1"/>\n      </esp_auth_algo_list>\n    </ikev2_info>\n  </WP_VARIANT>\n</IWLAN_S2B_CONFIG>\n';
+let ix = T.iwlan_parse(IW);
+eq([ ix.dh, ix.ike_integ, ix.esp_integ, ix.ike_rekey_s, ix.esp_rekey_s, ix.dpd, ix.peer_id_type, ix.peer_id, ix.static_fqdn ],
+	[ [ '14', '5' ], [ '12', '2' ], [ '2' ], '86400', '14400', 'TRUE', 'ID_FQDN', null, null ],
+	'iwlan_parse: the GENERIC_VARIANT only (not the WP one), groups, hashes, timers, DPD, peer id');
+eq(T.iwlan_options(ix), { opts: { vowifi_rekey_s: '86400', vowifi_esp_rekey_s: '14400' },
+	lists: { vowifi_proposals: [ 'aes256-aes128-sha256-sha1-modp2048-modp1536', 'default' ],
+	         vowifi_esp_proposals: [ 'aes256-aes128-sha1', 'default' ] } },
+	'iwlan_options: the MBN\'s proposal first, charon\'s defaults after it, the rekey timers');
+eq(T.iwlan_proposal([ '20' ], [], [ '19', '99' ]), 'aes256gcm16-sha256-sha1-ecp256', 'iwlan_proposal: GCM, an unknown group left out');
+eq(T.iwlan_parse('<nothing/>'), null, 'iwlan_parse: not an iwlan config');
+eq(T.iwlan_options(null), {}, 'iwlan_options: none');
+
+// a profile with its own value keeps it; a missing option is added
+let pw = { config: 'wwand_ims', name: 'vf', type: 'ims_profile', opts: { vowifi_rekey_s: '86400' },
+           lists: { vowifi_proposals: [ 'aes256-sha1-modp2048', 'default' ] } };
+d = T.section_plan(pw, { '.type': 'ims_profile', match_imsi: '26202' });
+eq([ d.action, d.missing ], [ 'add', [ [ 'vowifi_rekey_s', '86400' ], [ 'vowifi_proposals', 'aes256-sha1-modp2048' ],
+	[ 'vowifi_proposals', 'default' ] ] ], 'section_plan: options not set there yet are added');
+d = T.section_plan(pw, { '.type': 'ims_profile', vowifi_rekey_s: '3600', vowifi_proposals: [ 'aes128-sha256-modp2048' ] });
+eq(d.diff, [ [ 'vowifi_rekey_s', '3600', '86400' ] ], 'section_plan: the user\'s own value differs (kept without --force)');
+let vp = T.setup_sections({ modem: 'wwmodem0', profile: cg[1], vowifi: { table: 31, dev: 'imswifi0', iface: 'wwvowifi', if_id: 7001, mtu: 1280 },
+	iwlan: T.iwlan_options(ix), profile_name: 'mbn_26299', profile_new: { label: 'Commercial-Example', match_imsi: '26299' } });
+eq([ vp[0].config, vp[0].name, vp[0].type, vp[0].opts.match_imsi, vp[0].opts.vowifi_rekey_s ],
+	[ 'wwand_ims', 'mbn_26299', 'ims_profile', '26299', '86400' ], 'setup vowifi: a new profile for the SIM\'s PLMN with the MBN\'s settings');
+
 // ---- the UE line's readers ------------------------------------------------------------------
 
 // the PANI the network accepted on 2026-11-14 (from AT+QENG then)

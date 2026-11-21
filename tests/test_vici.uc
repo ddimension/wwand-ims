@@ -124,7 +124,16 @@ c.request('version', null, (e, r) => null);
 eq([ w.sent[0]?.type, w.sent[0]?.name ], [ VICI.T.EVENT_REGISTER, 'log' ], 'client: after a reconnect the listeners come first');
 w.say(VICI.packet(VICI.T.EVENT_CONFIRM, null, null));
 eq(w.sent[1]?.name, 'version', 'client: then the request');
+// reset (a watchdog): what waits fails, no on_close, the next request reconnects
+closed = null;
+let rw = null;
+c.request('slow', null, (e, r) => { rw = e; });
+c.reset('no answer');
+eq([ rw?.error, closed ], [ 'vici', null ], 'reset: the waiting request fails, not reported as on_close');
+w.sent = [];
+c.request('version', null, (e, r) => null);
+eq(w.sent[0]?.name, 'log', 'reset: the next request connects again, listeners first');
 c.close();
-eq(closed, 'charon closed the connection', 'client: our own close is not reported');
+eq(closed, null, 'client: our own close is not reported');
 
 done();

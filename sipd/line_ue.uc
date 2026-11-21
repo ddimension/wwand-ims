@@ -584,6 +584,11 @@ export function create(o)
 				fails++;
 				log('warn', sprintf('ue: registration failed: %J; again in %d s%s', err, wait / 1000,
 					moved ? sprintf(' via P-CSCF %s', pcscf_pick(env.pcscfs, pcscf_ix)) : ''));
+				// the kernel refused the sec-agree SAs (EINVAL: a crypto
+				// driver that cannot take the key, ue/kcrypto.uc): the owner
+				// may unload it before the next try
+				if (err?.error == 'xfrm' && match(sprintf('%J', err.detail), /Invalid argument/))
+					o.on_xfrm_refused?.(err);
 				// a refresh that failed: the old one may still stand
 				self.state = cur ? 'registered' : 'down';
 				if (cur && !busy())

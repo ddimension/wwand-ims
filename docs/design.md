@@ -107,6 +107,12 @@ Source: "Vodafone IoT 90128 Variant Settings.xlsx", column c-IoT, read
 | Ut / XCAP | no | MBN IMS items |
 | Emergency | IMS where available | MBN IMS items |
 
+
+A profile can be made from what is in use (LuCI Network → VoLTE, *Clone
+current settings*; sipd ubus `profile_snapshot`): the IMS profile of the
+modem's carrier config (APN, PDP type), its voice domain and usage
+settings, the registration's sec-agree algorithms, the P-CSCF port, the
+SMS centre (`AT+CSCA?`), with the SIM's IMSI prefix as `match_imsi`.
 ## 4. The MBN problem, in three steps
 
 The plugin tries them in order, per profile (`option mbn`):
@@ -315,6 +321,31 @@ Open for a router:
   `vowifi_remote_auth`, `vowifi_pani`), ims_modem's override.
   An incoming call rang the LAN phone and talked through the tunnel
   (2026-11-21). Open: the P-ANI value (`IEEE-802.11` is sent), handover.
+- **From the carrier config:** the MBN carries the modem's own IWLAN
+  settings as the EFS file `/data/iwlan_s2b_config.xml` (GENERIC_VARIANT /
+  ikev2_info: DH groups, IKE/ESP hash lists, rekey timers, DPD, peer id;
+  epdg_addr_info: a static ePDG FQDN). `wwandctl ims setup` reads it — from
+  `--mbn FILE` (the firmware image's MBN), the modem's EFS over Quectel's
+  `AT+QNVFR`, or else over the DIAG port (`ctl/diag.uc`: EFS2 HELLO/STAT/
+  OPEN/READ/CLOSE, read-only, any Qualcomm modem; both byte-identical on the
+  RG502Q, 3015 bytes, 2026-11-21) — and adds `vowifi_proposals` (the MBN's proposal, then
+  charon's defaults), `vowifi_esp_proposals`, `vowifi_rekey_s`,
+  `vowifi_esp_rekey_s`, `vowifi_dpd_s`, `vowifi_epdg` to the SIM's operator
+  profile (a new `mbn_<PLMN>` one when none matches); what is set there
+  already is kept. Read from public MBNs (Pixel 3A, 2026-11-21): Vodafone DE
+  DH 14/2/5, rekey 86400/14400 s; Telekom DE DH 2 (5), rekey 64800 s — its
+  ePDG demanded MODP_4096 nevertheless, which charon's defaults after the
+  MBN's proposal cover.
+- **Vodafone DE (262/02, 2026-11-21, NR7101 on the Chateau's card over
+  wwand-rsim):** MODP_2048 demanded (INVAL_KE); without IDr the first
+  IKE_AUTH answer is N(10500) NETWORK_FAILURE + N(41041) BACKOFF_TIMER; with
+  IDr `ims` EAP-AKA succeeds and the ePDG assigns an IPv6 address and two
+  P-CSCFs, then answers IDr = its FQDN, which charon refuses (it requires
+  the IDr it sent). The feed's strongSwan plugin `epdg-idr` lets charon
+  accept it (`docs/strongswan-idr.md`); the IMS APN is now sent as IDr by
+  default, for every operator. With it Vodafone registers over VoWiFi
+  (sec-agree `hmac-sha-1-96` + `aes-cbc`, which needed the EIP-93
+  fallback of 5.9 on the NR7101).
 - **GDSP:** the Vodafone product description lists VoWiFi with a separate
   setup; not tested.
 
@@ -365,6 +396,46 @@ whether the delivery report must carry more headers, and the SC (profile
 `sms_smsc`, else the one an SMS came from, else `AT+CSCA?`). With one
 number on several SIMs (§5.6) the network may deliver the SMS to the
 router instead of the phone once `smsip` is registered.
+
+### 5.8 Forwarded calls (2026-11-21, not measured yet)
+
+A call forwarded to the router's number (CDIV, TS 24.604) carries the
+diversion in `History-Info` (RFC 7044): one entry per hop, the new target of
+a diversion with the RFC 4458 `cause` URI parameter, its parent (`index`
+minus the last component) the diverting user. sipd passes the header to the
+LAN as it came and adds `Diversion` (RFC 5806) for phones and PBXs that read
+that one (`sip.uc` `history_info` / `diversions`, the cause mapping of RFC
+6044: 302 unconditional, 486 user-busy, 408 no-answer, 480/487 deflection,
+503 unavailable, 404 unknown); a `Diversion` of the network's own is passed
+instead. No filtering: the network applies `Privacy: history` itself.
+Open: what Telekom sends for a landline forwarded to the mobile number.
+
+### 5.9 Kernel crypto: MT7621's EIP-93 (2026-11-21)
+
+Vodafone DE's P-CSCF offers sec-agree only as `hmac-sha-1-96` +
+`aes-cbc`. On the NR7101 (MT7621, OpenWrt 25.12, kernel 6.12) every such
+SA failed with EINVAL: the EIP-93 driver (`crypto_hw_eip93`, the old MTK
+driver of ramips patch 860) registers `authenc(hmac(sha1|md5|sha256),
+cbc(aes))` at priority 1500, above the software ones, and rejects every
+key for them (`ip xfrm state add … auth-trunc hmac(sha1) … enc cbc(aes)`
+fails in transport and tunnel mode, IPv4 and IPv6; the same with the
+module unloaded works). charon's tunnel (`hmac(sha2_512)`, which the
+driver lacks) was never affected.
+
+Runtime fallback (`ue/kcrypto.uc`): sipd probes the encrypted
+combinations it offers at start (an SA on 2001:db8::/32 for an instant);
+EINVAL with a known faulty module loaded unloads it (`rmmod`), the
+kernel's software crypto takes over. A registration that still meets
+EINVAL runs the same check; a module the VoWiFi tunnel holds goes after
+the tunnel is taken down. The module comes back at the next boot, where
+the check runs again.
+
+**TODO (later):** fix the driver instead — find where the setkey of the
+authenc combinations returns EINVAL (`mtk_aead_setkey` /
+`mtk_authenc_setkey` in ramips patch 860; OpenWrt main has the upstream
+`inside-secure/eip93` driver, which may not have the bug), carry the fix in
+our images and offer it upstream; then the fallback only covers images
+without it.
 
 ## 6. Test device
 

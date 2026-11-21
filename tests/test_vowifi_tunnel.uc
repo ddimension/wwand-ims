@@ -16,8 +16,10 @@ eq(TUN.nai('262991234567890', p), '0262991234567890@nai.epc.mnc099.mcc262.3gppne
 let c = TUN.conn_config({ imsi: '262991234567890', plmn: p, if_id: 42 })[TUN.CONN];
 eq([ c.remote_addrs, c.vips, c.if_id_in, c.if_id_out, c.local.auth, c.local.id, c.remote.id, c.remote.auth ],
 	[ [ 'epdg.epc.mnc099.mcc262.pub.3gppnetwork.org' ], [ '0.0.0.0', '::' ], '42', '42', 'eap-aka',
-	  '0262991234567890@nai.epc.mnc099.mcc262.3gppnetwork.org', '%any', 'eap-aka' ],
-	'conn_config: ePDG, virtual IPs, the XFRM interface, EAP-AKA with the NAI, no IDr by default');
+	  '0262991234567890@nai.epc.mnc099.mcc262.3gppnetwork.org', 'ims', 'eap-aka' ],
+	'conn_config: ePDG, virtual IPs, the XFRM interface, EAP-AKA with the NAI, the IMS APN as IDr');
+eq(TUN.conn_config({ imsi: '262991234567890', plmn: p, if_id: 42, apn: '%any' })[TUN.CONN].remote.id, '%any',
+	'conn_config: vowifi_apn \'%any\' sends no IDr');
 eq([ c.children.ims.local_ts, c.children.ims.mode ], [ [ '0.0.0.0/0', '::/0' ], 'tunnel' ], 'conn_config: one child, all traffic');
 eq(c.proposals, [ 'aes256-sha512-modp4096', 'default' ], 'conn_config: MODP_4096 first, charon\'s defaults after');
 let c2 = TUN.conn_config({ imsi: '262991234567890', plmn: p, if_id: 7, epdg: 'epdg.example.net', apn: 'ims.x',

@@ -12,6 +12,7 @@ ln -sfn ../sipd/sip.uc "$TESTDIR/sipd_sip.uc"
 ln -sfn ../sipd/core.uc "$TESTDIR/sipd_core.uc"
 ln -sfn ../ue/aka.uc "$TESTDIR/ue_aka.uc"
 ln -sfn ../ue/secagree.uc "$TESTDIR/ue_secagree.uc"
+ln -sfn ../ue/kcrypto.uc "$TESTDIR/ue_kcrypto.uc"
 ln -sfn ../ue/reg.uc "$TESTDIR/ue_reg.uc"
 ln -sfn ../ue/call.uc "$TESTDIR/ue_call.uc"
 ln -sfn ../sipd/line_ue.uc "$TESTDIR/sipd_line_ue.uc"
@@ -25,6 +26,9 @@ ln -sfn ../vowifi/tunnel.uc "$TESTDIR/vowifi_tunnel.uc"
 ln -sfn ../vowifi/ctl.uc "$TESTDIR/vowifi_ctl.uc"
 ln -sfn ../ctl/ims.uc "$TESTDIR/ctl_ims.uc"
 ln -sfn ../ctl/mcfg.uc "$TESTDIR/ims_mcfg.uc"
+ln -sfn ../ctl/diag.uc "$TESTDIR/ims_diag.uc"
+ln -sfn ../ctl/iwlan.uc "$TESTDIR/ims_iwlan.uc"
+ln -sfn ../ctl/iwlan_lazy.uc "$TESTDIR/ims_iwlan_lazy.uc"
 
 # wwand's native module wwand_io.so now carries the NETLINK_XFRM binding
 # (sub-namespace xfrm, merged from the old src/xfrm). Built out of tree from

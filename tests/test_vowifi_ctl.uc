@@ -22,6 +22,10 @@ eq(CTL.log_line(L('ENC', 1, 'parsed IKE_AUTH response 1 [ IDr EAP/REQ/AKA ]')), 
 eq(CTL.log_line(L('IKE', 2, 'sending keep alive')), null, 'log_line: level 2 left out');
 eq(CTL.log_line(L('CFG', 1, 'constraint check failed: identity required')).level, 'warn', 'log_line: a failure -> warn');
 eq(CTL.log_line(L('IKE', 1, 'established', 'other-vpn')), null, 'log_line: another connection of charon left out');
+eq(CTL.log_line(L('ENC', 2, 'parsed IKE_AUTH response 1 [ N(AUTH_FAILED) ]'), 2).level, 'warn', 'log_line detail: a failure stays warn');
+eq(CTL.log_line(L('NET', 2, 'sending packet: from 10.0.0.1[4500] to 198.51.100.7[4500] (484 bytes)'), 2),
+	{ level: 'debug', msg: 'charon[NET2]: sending packet: from 10.0.0.1[4500] to 198.51.100.7[4500] (484 bytes)' }, 'log_line detail 2: NET level 2 as debug');
+eq(CTL.log_line(L('ENC', 3, 'raw'), 2), null, 'log_line detail 2: level 3 left out');
 
 function world(answers)
 {
@@ -42,8 +46,12 @@ function world(answers)
 						fn(l);
 			for (let m in w.answers[ev] ?? [])
 				item?.(m);
+			// a charon that died mid-request: the answer never comes
+			if (w.answers.hang == cmd)
+				return;
 			cb(null, pick(cmd));
 		},
+		reset: (why) => { push(w.reqs, 'reset:' + why); },
 		listen: (ev, fn) => { w.listeners[ev] ??= []; push(w.listeners[ev], fn); },
 	};
 	w.uloop = { timer: (ms, fn) => { let t = { ms: ms, fn: fn }; t.cancel = () => { t.dead = true; }; push(w.timers, t); return t; } };
@@ -123,6 +131,19 @@ eq([ err, w.timers[length(w.timers) - 1]?.ms ], [ { error: 'load-conn', detail: 
 w = world({ 'list-sa': [ { [TUN.CONN]: { state: 'ESTABLISHED', 'local-vips': [] } } ] });
 w.ctl.start((e) => { err = e; });
 eq([ err?.error, w.ctl.status().state ], [ 'no_vip', 'down' ], 'no virtual IP: down');
+
+// charon silent during an initiate (died, the connection stayed open): the
+// watchdog gives up after 90 s, drops the connection, tries again
+w = world({ hang: 'initiate', 'list-sa': [ SA ] });
+w.ctl.start((e) => { err = e; });
+let wd = w.timers[length(w.timers) - 1];
+eq([ w.ctl.status().state, wd.ms ], [ 'connecting', 90000 ], 'silent charon: connecting, the watchdog armed');
+w.fire();
+eq([ err?.error, w.ctl.status().state, w.reqs[length(w.reqs) - 1], w.timers[length(w.timers) - 1].ms ],
+	[ 'charon', 'down', 'reset:no answer from charon', 10000 ], 'silent charon: after 90 s down, connection reset, again in 10 s');
+w.answers.hang = null;
+w.fire();
+eq(w.ctl.status().state, 'up', 'silent charon: the next attempt comes up');
 
 // stop: terminate, unload, link gone, no retries any more
 w = world({ 'list-sa': [ SA ] });

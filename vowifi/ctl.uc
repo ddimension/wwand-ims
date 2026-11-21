@@ -38,6 +38,12 @@ import * as TUN from 'vowifi_tunnel';
 
 const BACKOFF = [ 5000, 10000, 20000, 40000, 60000 ];
 
+// one attempt (load-conn, initiate with its own 60 s limit, list-sas) that
+// has not ended after this long has lost charon: an answer that never came
+// (HW 2026-11-21: charon died during an initiate and the vici connection
+// stayed silent) — the connection is dropped and the attempt counts as failed
+const ATTEMPT_MS = 90000;
+
 // charon installs the virtual IP itself as well, where its outer route
 // points (the LAN bridge here): that copy goes, the one netifd put on the
 // XFRM interface stays, and charon's settings stay as they are for its
@@ -58,14 +64,20 @@ export function drop_charon_vip_cmds(o, v4, v6)
 // a vici `log` event of our connection as a syslog line, or null: level 0
 // and 1 of the IKE, CFG, CHD and KNL groups as info; anything that says it
 // failed as warn; NET/ENC chatter (packets, encodings) only when it fails
-export function log_line(m)
+// `detail` (option vowifi_loglevel, charon's levels 0-4): above 1 every
+// group of the connection up to that level, as debug — the messages of the
+// tunnel's setup, which `initiate` streams as control-log at that level
+// (vici's global log event stops at level 1, LEVEL_CTRL: vici_logger.c)
+export function log_line(m, detail)
 {
-	if (m?.['ikesa-name'] != TUN.CONN || m?.msg == null)
+	if (m?.['ikesa-name'] != TUN.CONN && m?.['ikesa-name'] != null || m?.msg == null)
 		return null;
 	let lvl = +(m.level ?? 1), grp = m.group ?? '';
 	let bad = match(m.msg, /fail|error|unacceptable|AUTH_FAILED|not supported|giving up|timed out|no (proposal|matching)|NO_PROPOSAL_CHOSEN|TS_UNACCEPTABLE/i) != null;
 	if (bad)
 		return { level: 'warn', msg: sprintf('charon: %s', m.msg) };
+	if (detail > 1 && lvl <= detail)
+		return { level: (lvl <= 1) ? 'info' : 'debug', msg: sprintf('charon[%s%d]: %s', grp, lvl, m.msg) };
 	if (lvl > 1 || index([ 'IKE', 'CFG', 'CHD', 'KNL' ], grp) < 0)
 		return null;
 	return { level: 'info', msg: sprintf('charon: %s', m.msg) };
@@ -78,7 +90,7 @@ export function create(o)
 	let vici = o.vici;
 	let st = { state: 'stopped', v4: null, v6: null, pcscf: [], error: null, tries: 0 };
 	let plmn = TUN.plmn_of(o.imsi, o.mnc_len);
-	let retry_t = null, busy = false, first_cb = null;
+	let retry_t = null, busy = false, first_cb = null, watch_t = null, gen = 0, listening = false;
 
 	let run_all = (cmds) => {
 		for (let c in cmds) {
@@ -112,6 +124,8 @@ export function create(o)
 	};
 
 	let finished = (err) => {
+		watch_t?.cancel();
+		watch_t = null;
 		busy = false;
 		let cb = first_cb;
 		first_cb = null;
@@ -131,13 +145,16 @@ export function create(o)
 
 	// the SA's virtual IPs onto the interface
 	let addresses = () => {
-		let sa = null;
+		let sa = null, my = gen;
+		let done = (err) => (my == gen) ? finished(err) : null;
 		vici.stream('list-sas', { ike: TUN.CONN }, 'list-sa', (m) => { sa ??= m; }, (err) => {
 			if (st.state == 'stopped')
-				return finished(null);
+				return done(null);
 			let v = TUN.vips_of(sa);
 			if (err || (!v.v4 && !v.v6))
-				return finished(err ?? { error: 'no_vip', detail: 'the ePDG gave no inner address' });
+				return done(err ?? { error: 'no_vip', detail: 'the ePDG gave no inner address' });
+			if (my != gen)
+				return;
 			st.state = 'up';
 			st.v4 = v.v4;
 			st.v6 = v.v6;
@@ -147,7 +164,7 @@ export function create(o)
 			o.notify?.();
 			log('info', sprintf('vowifi: tunnel up to %s, inner %s%s%s, P-CSCF %s', v.remote ?? '?',
 				v.v4 ?? '', (v.v4 && v.v6) ? ' ' : '', v.v6 ?? '', join(' ', st.pcscf) || 'none'));
-			finished(null);
+			done(null);
 		});
 	};
 
@@ -158,16 +175,40 @@ export function create(o)
 		busy = true;
 		st.state = 'connecting';
 		st.pcscf = [];
+		// the answers of an attempt the watchdog gave up on are not this one's
+		let my = ++gen;
+		let done = (err) => (my == gen) ? finished(err) : null;
+		watch_t = o.uloop.timer(ATTEMPT_MS, () => {
+			watch_t = null;
+			if (my != gen || !busy)
+				return;
+			gen++;
+			log('warn', sprintf('vowifi: no answer from charon for %d s; connecting to it again', ATTEMPT_MS / 1000));
+			vici.reset?.('no answer from charon');
+			finished({ error: 'charon', detail: 'no answer from charon' });
+		});
 		vici.request('load-conn', TUN.conn_config({ imsi: o.imsi, plmn: plmn, if_id: o.if_id, epdg: o.epdg,
-			apn: o.apn, proposals: o.proposals, esp_proposals: o.esp_proposals, remote_auth: o.remote_auth }),
+			apn: o.apn, proposals: o.proposals, esp_proposals: o.esp_proposals, remote_auth: o.remote_auth,
+			rekey_s: o.rekey_s, esp_rekey_s: o.esp_rekey_s, dpd_s: o.dpd_s }),
 			(err, res) => {
 				if (err || res?.success != 'yes')
-					return finished({ error: 'load-conn', detail: err?.detail ?? res?.errmsg ?? 'refused' });
-				vici.stream('initiate', { child: 'ims', ike: TUN.CONN, timeout: '60000', 'init-limits': 'no' },
-					'control-log', null, (e, r) => {
+					return done({ error: 'load-conn', detail: err?.detail ?? res?.errmsg ?? 'refused' });
+				// with a log level above 1 the setup's messages at that level
+				// (control-log), which charon's global log never carries
+				let detail = +(o.loglevel ?? 1);
+				vici.stream('initiate', { child: 'ims', ike: TUN.CONN, timeout: '60000', 'init-limits': 'no',
+				                          loglevel: sprintf('%d', detail) },
+					'control-log', (m) => {
+						if (detail <= 1)
+							return;
+						let l = log_line({ ...m, 'ikesa-name': m?.['ikesa-name'] ?? TUN.CONN }, detail);
+						if (l)
+							log(l.level, l.msg);
+					}, (e, r) => {
 						if (e || r?.success != 'yes')
-							return finished({ error: 'initiate', detail: e?.detail ?? r?.errmsg ?? 'initiate failed' });
-						addresses();
+							return done({ error: 'initiate', detail: e?.detail ?? r?.errmsg ?? 'initiate failed' });
+						if (my == gen)
+							addresses();
 					});
 			});
 	};
@@ -186,24 +227,29 @@ export function create(o)
 			return cb?.({ error: 'imsi', detail: 'no IMSI to build the identity from' });
 		st.state = 'down';
 		st.tries = 0;
-		vici.listen('log', (m) => {
-			if (m?.['ikesa-name'] != TUN.CONN)
-				return;
-			let p = TUN.pcscf_from_log(m?.msg);
-			if (p && index(st.pcscf, p) < 0)
-				push(st.pcscf, p);
-			let l = log_line(m);
-			if (l)
-				log(l.level, l.msg);
-		});
-		vici.listen('ike-updown', (m) => {
-			if (m?.[TUN.CONN] && m.up != 'yes')
-				sa_down('IKE');
-		});
-		vici.listen('child-updown', (m) => {
-			if (m?.[TUN.CONN] && m.up != 'yes')
-				sa_down('CHILD');
-		});
+		// once: a start after a stop keeps the listeners it has
+		if (!listening) {
+			listening = true;
+			vici.listen('log', (m) => {
+				if (m?.['ikesa-name'] != TUN.CONN)
+					return;
+				let p = TUN.pcscf_from_log(m?.msg);
+				if (p && index(st.pcscf, p) < 0)
+					push(st.pcscf, p);
+				// while an initiate streams its own (control-log), not twice
+				let l = (busy && +(o.loglevel ?? 1) > 1) ? null : log_line(m, +(o.loglevel ?? 1));
+				if (l)
+					log(l.level, l.msg);
+			});
+			vici.listen('ike-updown', (m) => {
+				if (m?.[TUN.CONN] && m.up != 'yes')
+					sa_down('IKE');
+			});
+			vici.listen('child-updown', (m) => {
+				if (m?.[TUN.CONN] && m.up != 'yes')
+					sa_down('CHILD');
+			});
+		}
 		first_cb = cb;
 		attempt();
 	};
@@ -212,6 +258,9 @@ export function create(o)
 	self.vici_closed = function(why) {
 		if (st.state == 'stopped')
 			return;
+		watch_t?.cancel();
+		watch_t = null;
+		gen++;
 		busy = false;
 		set_down(sprintf('charon: %s', why ?? 'gone'));
 		schedule();
@@ -222,10 +271,9 @@ export function create(o)
 	// line_ue's view: the UE address and P-CSCFs the tunnel gave, and the
 	// device its sockets bind to (the IMS PDN's VRF there). The tunnel's
 	// netifd interface must be in the IMS firewall zone (wwandctl ims
-	// setup), or the
-	// replies to the protected server port are rejected (ICMP port
-	// unreachable, HW 2026-11-21). The sec-agree SAs inside the tunnel need
-	// no if_id.
+	// setup), or the replies to the protected server port are rejected (ICMP
+	// port unreachable, HW 2026-11-21). The sec-agree SAs inside the tunnel
+	// need no if_id.
 	// No VRF here: netifd (OpenWrt 25.12, 2026.02.26) turns IPv6 off on every
 	// VRF port without an ipv6 setting of its own (vrf.c, "Disable IPv6 for
 	// vrf ports"; gone in 2026.07), and the XFRM interface proto xfrm creates
@@ -240,6 +288,9 @@ export function create(o)
 	self.stop = function(cb) {
 		retry_t?.cancel();
 		retry_t = null;
+		watch_t?.cancel();
+		watch_t = null;
+		gen++;
 		let was_up = (st.state == 'up');
 		st.state = 'stopped';
 		vici.request('terminate', { ike: TUN.CONN, timeout: '5000' }, () => {
