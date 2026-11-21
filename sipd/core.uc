@@ -33,6 +33,7 @@ let S = require('sipd_sip');
 
 const T1 = 500, T2 = 4000, TIMER_B = 64 * T1;	// RFC 3261 17.1.1.1/17.1.2.2
 const NONCE_TTL = 300;
+const HISTORY = 10;
 
 function create(env)
 {
@@ -42,6 +43,7 @@ function create(env)
 	let bindings = {};		// user -> { contact, addr, expires }
 	let nonces = {};		// nonce -> issued at
 	let call = null;		// the one call
+	let history = [];		// the last HISTORY calls, newest first
 
 	let me = () => sprintf('%s:%d', cfg.ip, cfg.port);
 	let tag = () => substr(env.random(), 0, 10);
@@ -156,17 +158,44 @@ function create(env)
 		c.retx = env.timer(wait, tick);
 	};
 
-	// incoming calls that ended before the phone's final answer to our
-	// INVITE: that answer (a 487 after our CANCEL) still needs its ACK, or
-	// the phone repeats it for 32 s (RFC 3261 17.2.1, Timer H)
+	// incoming calls that are over: the phone's final answer to our INVITE
+	// may still come or come again — a 487 after our CANCEL, or a 200 whose
+	// ACK got lost — and each needs its ACK, or the phone repeats it for 32 s
+	// (RFC 3261 13.3.1.4, 17.2.1)
 	let ended_in = {};
+
+	// one call into the history (env.history_changed persists it)
+	let record = (r) => {
+		unshift(history, r);
+		if (length(history) > HISTORY)
+			history = slice(history, 0, HISTORY);
+		env.history_changed?.(history);
+	};
+
+	// what became of a call, from how it ended
+	let outcome = (c, why) => {
+		if (c.answered)
+			return 'answered';
+		if (c.dir == 'in')
+			return match(why ?? '', /^phone (486|600|603)/) ? 'declined' : 'missed';
+		return match(why ?? '', /cancel|hung up/) ? 'cancelled' : 'failed';
+	};
 
 	let end_call = (c, why) => {
 		if (!c)
 			return;
 		stop_retx(c);
-		if (c.dir == 'in' && c.state != 'up' && !ended_in[c.call_id]) {
+		if (!c.recorded) {
+			c.recorded = true;
+			let now = env.now();
+			record({ start: c.started ?? now, answered: c.answered, end: now, dir: c.dir,
+			         number: c.number, extension: c.ext, result: outcome(c, why), reason: why,
+			         codec: c.codec_name ?? c.codec, backend: c.lc || c.media ? 'ue' : 'qmi',
+			         packets: c.media ? env.relay.stats?.(c.media) : null });
+		}
+		if (c.dir == 'in' && !ended_in[c.call_id]) {
 			let id = c.call_id;
+			c.was_up = (c.state == 'up');
 			ended_in[id] = c;
 			env.timer(32000, () => { delete ended_in[id]; });
 		}
@@ -212,6 +241,8 @@ function create(env)
 		let a = amr_of(pt_sdp ?? ims_sdp);
 		let far = { lan: U.sdp_media(lan_sdp), ims: U.sdp_media(ims_sdp), ims_pt: a?.pt, ims_rate: a?.rate,
 		            ims_octet: a?.octet };
+		if (a)
+			c.codec_name = (a.rate == 16000) ? 'AMR-WB' : 'AMR';
 		if (c.connected)
 			return env.relay.update(c.media, far);
 		c.connected = true;
@@ -279,6 +310,7 @@ function create(env)
 		}
 		if (ev == 'answered' && c.state != 'up') {
 			c.state = 'up';
+			c.answered ??= env.now();
 			line_connect(c, c.req.body, d?.body);
 			media_watch(c);
 			c.last = S.response(c.req, 200, 'OK', { to_tag: c.local_tag, headers: [
@@ -308,7 +340,7 @@ function create(env)
 		}
 	};
 
-	out_line = (req, from, number) => {
+	out_line = (req, from, number, who) => {
 		if (!env.line.ready())
 			return send(S.response(req, 503, 'Service Unavailable', { to_tag: tag(), headers: [
 				[ 'Warning', '399 wwand-ims "IMS not registered"' ] ] }), source(from));
@@ -327,6 +359,8 @@ function create(env)
 		c.local = S.get(req, 'to') + ';tag=' + c.local_tag;
 		c.remote = S.get(req, 'from');
 		call = c;
+		c.started = env.now();
+		c.ext = who;
 		send(S.response(req, 100, 'Trying'), c.addr);
 
 		// CLIR: the PBX/Asterisk withholds the caller's number either with a
@@ -365,6 +399,9 @@ function create(env)
 
 		if (!user || call) {
 			log('warn', sprintf('sipd: incoming call from %s: %s', inc.number ?? '?', user ? 'busy' : 'no phone registered'));
+			let now = env.now();
+			record({ start: now, end: now, dir: 'in', number: inc.number, extension: user, result: 'missed',
+			         reason: user ? 'busy' : 'no phone registered', backend: 'ue' });
 			lc.reject(user ? 486 : 480, user ? 'Busy Here' : 'Temporarily Unavailable');
 			env.relay.stop(inc.media);
 			return;
@@ -383,6 +420,8 @@ function create(env)
 		c.local = sprintf('<sip:%s@%s>;tag=%s', caller, cfg.ip, c.local_tag);
 		c.remote = sprintf('<sip:%s@%s>', inc.called ?? user, cfg.ip);
 		call = c;
+		c.started = env.now();
+		c.ext = user;
 
 		inc.set((ev, d) => {
 			if (call !== c)
@@ -439,6 +478,7 @@ function create(env)
 			return end_call(c, 'no AMR in the phone\'s answer');
 		}
 		c.state = 'up';
+		c.answered ??= env.now();
 		line_connect(c, res.body, c.lc.offer, c.lc.answer);
 		media_watch(c);
 		if (!c.lc.accept())
@@ -455,8 +495,9 @@ function create(env)
 			return;
 		}
 
-		if (!authenticate(req, from, 'proxy-authorization', 407, 'Proxy Authentication Required',
-		                  'Proxy-Authenticate'))
+		let who = authenticate(req, from, 'proxy-authorization', 407, 'Proxy Authentication Required',
+		                       'Proxy-Authenticate');
+		if (!who)
 			return;
 
 		let ruri = S.parse_uri(req.uri);
@@ -468,7 +509,7 @@ function create(env)
 			return send(S.response(req, 486, 'Busy Here', { to_tag: tag() }), source(from));
 
 		if (env.line)
-			return out_line(req, from, number);
+			return out_line(req, from, number, who);
 
 		let offer = S.sdp_parse(req.body);
 		let codec = S.sdp_pick(offer, cfg.codecs);
@@ -486,6 +527,8 @@ function create(env)
 		c.local = S.get(req, 'to') + ';tag=' + c.local_tag;
 		c.remote = S.get(req, 'from');
 		call = c;
+		c.started = env.now();
+		c.ext = who;
 
 		c.rtp_port = env.media.start(c);
 		send(S.response(req, 100, 'Trying'), c.addr);
@@ -512,6 +555,7 @@ function create(env)
 		}
 		else if (mc.state == 'conversation' && (c.state == 'trying' || c.state == 'ringing')) {
 			c.state = 'up';
+			c.answered ??= env.now();
 			env.media.connect(c);
 			c.last = S.response(c.req, 200, 'OK', { to_tag: c.local_tag, headers: [
 				[ 'Contact', our_contact(c.addr) ], [ 'Content-Type', 'application/sdp' ] ] }, answer_sdp(c));
@@ -530,6 +574,9 @@ function create(env)
 
 		if (!user) {
 			log('warn', sprintf('sipd: incoming call from %s, no phone registered', mc.number ?? '?'));
+			let now = env.now();
+			record({ start: now, end: now, dir: 'in', number: mc.number, result: 'missed',
+			         reason: 'no phone registered', backend: 'qmi' });
 			return;
 		}
 
@@ -544,6 +591,8 @@ function create(env)
 		c.local = sprintf('<sip:%s@%s>;tag=%s', caller, cfg.ip, c.local_tag);
 		c.remote = sprintf('<sip:%s@%s>', user, cfg.ip);
 		call = c;
+		c.started = env.now();
+		c.ext = user;
 		c.rtp_port = env.media.start(c);
 
 		let offer = S.sdp({ ip: cfg.ip, port: c.rtp_port, session: c.session, codecs: cfg.codecs });
@@ -572,8 +621,9 @@ function create(env)
 		if (S.get(res, 'contact'))
 			c.remote_contact = S.uri_of(S.get(res, 'contact'));
 		send(to_phone(c, 'ACK', { cseq: 1, branch: (res.status >= 300) ? c.branch : null }), c.addr);
-		// it answered while our CANCEL was on the way: that dialog ends at once
-		if (res.status < 300 && !c.bye_sent) {
+		// it answered while our CANCEL was on the way: that dialog ends at
+		// once (a 200 of a call that was up is only a retransmission)
+		if (res.status < 300 && !c.was_up && !c.bye_sent) {
 			c.bye_sent = true;
 			send(to_phone(c, 'BYE'), c.addr);
 		}
@@ -582,7 +632,9 @@ function create(env)
 	let on_response = (res, from) => {
 		let c = call;
 		let cs = S.cseq(res);
-		let late = ended_in[S.get(res, 'call-id') ?? ''];
+		let id = S.get(res, 'call-id') ?? '';
+		// the running call first; an ended one only for what is not its
+		let late = (c?.call_id != id) ? ended_in[id] : null;
 
 		if (late && late !== c && cs?.method == 'INVITE' && res.status >= 200)
 			return late_final(late, res);
@@ -625,6 +677,7 @@ function create(env)
 		c.remote_rtp = { address: ans.ip ?? from.address, port: ans.port };
 		c.dtmf_pt = ans.dtmf_pt;
 		c.state = 'up';
+		c.answered ??= env.now();
 		env.media.connect(c);
 		env.ims('answer', { id: c.mid }, (err) => {
 			if (err && call === c) {
@@ -765,6 +818,30 @@ function create(env)
 			return length(keys(bindings));
 		},
 		call: () => call,
+		// the running call, for a status page: no SIP internals
+		current: () => call ? {
+			dir: call.dir, number: call.number, extension: call.ext, state: call.state,
+			start: call.started, answered: call.answered, codec: call.codec_name ?? call.codec,
+			backend: call.lc || call.media ? 'ue' : 'qmi',
+			packets: call.media ? env.relay.stats?.(call.media) : null,
+		} : null,
+		history: () => history,
+		// a history saved by an earlier run (env.history_changed)
+		restore_history: (saved) => {
+			history = (type(saved) == 'array')
+				? slice(filter(saved, (r) => type(r) == 'object' && r.start != null), 0, HISTORY) : [];
+			return length(history);
+		},
+		// the registered phones: user -> { address, port, transport, expires }
+		extensions: () => {
+			let out = {}, now = env.now();
+			for (let u in sort(keys(cfg.users))) {
+				let b = bindings[u];
+				out[u] = (b && b.expires > now) ? { registered: true, address: b.addr?.address, port: b.addr?.port,
+					transport: b.addr?.transport ?? 'UDP', expires: b.expires - now } : { registered: false };
+			}
+			return out;
+		},
 	};
 }
 

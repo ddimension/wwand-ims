@@ -180,6 +180,9 @@ core.on_packet(replace(ack('CANCEL', 8), 'branch=z9hG4bK-cancel8', 'branch=z9hG4
 let statuses = map(slice(sent, -2), (s) => s.msg.status);
 eq(statuses, [ 200, 487 ], 'CANCEL: 200 to the CANCEL, 487 to the INVITE');
 eq(ims_calls[length(ims_calls) - 1], [ 'hangup', { id: 1 } ], 'CANCEL: modem call hung up');
+let hq = core.history()[0];
+eq([ hq.dir, hq.result, hq.reason, hq.extension, hq.backend ], [ 'out', 'cancelled', 'cancelled by the phone', '100', 'qmi' ],
+	'history: the call the phone cancelled, over the modem IMS');
 
 // ---- a dial the plugin refuses -------------------------------------------------------------
 

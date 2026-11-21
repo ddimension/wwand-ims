@@ -732,7 +732,7 @@ export function create(o)
 	// alert (180) when both segments are (RFC 3312 5.1; 24.229 6.1.2)
 	let mt_ring = () => {
 		let p = self.pre, u = self.uas;
-		if (!p.local || !p.remote || !p.told_local || p.rung || self.state != 'incoming')
+		if (!p.local || !p.remote || !p.told_local || p.rung || u.hold || self.state != 'incoming')
 			return;
 		p.rung = true;
 		// reliable like the 183 before it (the INVITE supports 100rel: we used it)
@@ -808,6 +808,15 @@ export function create(o)
 			return uas_final_error(488, 'Not Acceptable Here', 'rejected');
 
 		if (self.pre) {
+			// o.alert_delay holds the 180 back here too: at the earliest that
+			// long after the INVITE, and once both segments are up
+			if (o.alert_delay > 0) {
+				self.uas.hold = true;
+				timer(o.alert_delay, () => {
+					self.uas.hold = false;
+					mt_ring();
+				});
+			}
 			// 183 with the answer (reliable, RFC 3312 requires it); the 180
 			// waits until both segments are up (mt_check)
 			// Require: precondition, as RFC 3312 11 wants on the response

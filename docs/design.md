@@ -285,8 +285,12 @@ sipd stopped it rang in idle too. The caller always heard ringback.
 - With the 180 held back 4 s (`ims_profile` option `alert_delay_ms '4000'`,
   only the 100 before it; the LAN phone is offered the call at once) the
   phone rang in idle as well. Measured with `option sip_trace`; the lowest
-  delay that is enough was not searched for. The default is 8 s, for every
+  delay that is enough was not searched for. The default is 4.5 s, for every
   profile (`alert_delay_ms '0'` sends the 180 at once).
+- The upper limit: with 6 s and 8 s the network cancelled the router's leg
+  after 5.9 s without any 18x from it (`Reason: SIP;cause=480;
+  text="CC_NOT_REACHABLE"`), so the call never rang there. sipd warns about
+  more than 5 s.
 
 ## 6. Test device
 

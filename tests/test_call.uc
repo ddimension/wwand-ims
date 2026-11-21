@@ -408,6 +408,28 @@ s.call.accept();
 let r200q = s.last();
 eq([ r200q.msg.status, r200q.msg.body ], [ 200, '' ], 'MT accept with preconditions: 200 without SDP (offer/answer done)');
 
+// the same with alert_delay: both segments up early, the 180 only after the delay
+qready = null;
+s = setup();
+s.call = CALL.create({
+	ue_addr: UE, port_c: 5062, port_s: 5064, pcscf: { addr: PC, port_s: 6000, port_c: 32838 }, route: [],
+	impu: IMPU, contact_user: '001010123456789', imei_urn: 'urn:gsma:imei:35345678-901234-0',
+	sec_verify: 'x', rtp_port: 40000, timer: s.clk.timer, call_id: 'x', from_tag: 'ft1', alert_delay: 3000,
+	qos_wait: (cb) => { qready = cb; },
+	send: (buf, dst, port, src) => push(s.out, { msg: SIP.parse(buf), buf: buf, dst: dst, port: port, src: src }),
+});
+in_ev = [];
+s.call.incoming(CALL.initial_invite(qinv), (n, d) => push(in_ev, n));
+s.call.on_message(qprack);
+s.call.on_message(qupd);
+qready();
+ou = s.last();
+s.call.on_message(resp(ou.msg, 200, 'OK', [ [ 'Content-Type', 'application/sdp' ] ], QUPD));
+ok(index(map(s.out, (x) => x.msg.status), 180) < 0 && length(in_ev) == 0 && !s.call.accept(),
+	'MT preconditions + alert_delay: segments up, no 180 and no answer before the delay');
+s.clk.advance(3000);
+eq([ s.last().msg.status, in_ev ], [ 180, [ 'incoming' ] ], 'MT preconditions + alert_delay: the 180 after it');
+
 // MO: the network skips the 183 and sends 180 without SDP: no UPDATE (no answer yet)
 qready = null;
 s = setup();

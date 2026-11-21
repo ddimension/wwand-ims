@@ -10,7 +10,7 @@
 //                                     rtcp_timeout, alert_delay, warn: [ ... ] }
 //
 // A value the profile does not set is null: the UE's own default applies
-// (alert_delay: 8 s, see ALERT_DELAY).
+// (alert_delay: 4.5 s, see ALERT_DELAY).
 
 'use strict';
 
@@ -71,8 +71,11 @@ export function select(profiles, want, sim)
 
 // our 180 to an incoming call this late by default (ms). One number on
 // several SIMs (Telekom MultiSIM, docs/design.md 5.6): an at-once 180 kept
-// the network from alerting a phone in idle; 4 s were enough there.
-const ALERT_DELAY = 8000;
+// the network from alerting a phone in idle; 4 s were enough there, 4.5 s
+// leave the paging some margin. Not longer than ALERT_DELAY_MAX: that
+// network cancels a leg that has sent no 18x after 5.9 s (CANCEL Reason 480
+// CC_NOT_REACHABLE, measured with 6 s and 8 s).
+const ALERT_DELAY = 4500, ALERT_DELAY_MAX = 5000;
 
 function num(v)
 {
@@ -142,6 +145,10 @@ export function ue_opts(p)
 			u.udp = true;
 		}
 	}
+
+	if (u.alert_delay > ALERT_DELAY_MAX)
+		push(u.warn, sprintf('alert_delay_ms %d: a network may cancel the call before our 180 (Telekom: after 5.9 s)',
+			u.alert_delay));
 
 	let auth = lc(p?.auth ?? 'akav1-md5');
 	if (auth != 'akav1-md5')

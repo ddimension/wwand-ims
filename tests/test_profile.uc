@@ -64,7 +64,10 @@ eq(w.reg_event, false, 'reg_event 0');
 eq([ w.user_agent, w.pcscf_port, w.rtp_timeout, w.rtcp_timeout ], [ 'Example-UE/1.0', 5070, 0, 45 ],
 	'User-Agent, P-CSCF port, media timeouts (0 = off is kept)');
 eq([ w.t1, w.t2 ], [ 3000, 3000 ], 'T2 never below T1');
-eq([ w.alert_delay, d.alert_delay ], [ 4000, 8000 ], 'alert_delay_ms; 8 s without a profile');
+eq([ w.alert_delay, d.alert_delay ], [ 4000, 4500 ], 'alert_delay_ms; 4.5 s without a profile');
+let long_delay = PROFILE.ue_opts({ alert_delay_ms: '6000' });
+ok(long_delay.alert_delay == 6000 && length(filter(long_delay.warn, (x) => index(x, 'alert_delay_ms 6000') == 0)) == 1,
+	'alert_delay_ms above 5 s: kept, with a warning');
 eq(PROFILE.ue_opts({ alert_delay_ms: '0' }).alert_delay, 0, 'alert_delay_ms 0: the 180 at once');
 eq(length(w.warn), 5, 'one warning per thing that could not be honoured');
 eq(PROFILE.ue_opts({ sip_transport: 'udp' }).tcp, false, 'udp only: no TCP listener');

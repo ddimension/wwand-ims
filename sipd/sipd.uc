@@ -86,7 +86,10 @@ let port = +(gw.port ?? 5060);
 // option sip_trace '<file>': every SIP message, LAN and IMS side, in full
 // into that file (the IMS side is ESP, no packet capture shows it; syslog
 // would cut an INVITE short). For debugging only: it holds identities.
-let trace_fd = gw.sip_trace ? fs.open(gw.sip_trace, 'a') : null;
+let trace_fd = gw.sip_trace ? fs.open(gw.sip_trace, 'a', 0o600) : null;
+// an existing file keeps its mode: root only all the same
+if (trace_fd)
+	fs.chmod?.(gw.sip_trace, 0o600);
 if (gw.sip_trace && !trace_fd)
 	log('warn', sprintf('sipd: cannot open sip_trace %s: %s', gw.sip_trace, fs.error()));
 let trace = trace_fd ? (dir, peer, text) => {
@@ -168,6 +171,10 @@ let media = {
 // the phones' / PBX's registrations survive a restart of sipd (they are kept
 // until their expiry; a PBX would else be unreachable until it registers again)
 const BINDINGS = '/var/run/wwand-ims-sipd.bindings';
+// the last calls (sipd_core HISTORY). RAM by default; option call_history on
+// sip_gateway puts it elsewhere (on flash it is one write per call)
+let HISTORY_FILE = gw.call_history ?? '/var/run/wwand-ims-sipd.calls';
+let started = time();
 
 // the UE line's state for `wwandctl status`: the 'ue' backend broadcasts it on
 // the ubus event `wwand.ims.ue` (the ims plugin listens and turns the latest
@@ -221,6 +228,14 @@ core = CORE.create({
 	ims: ims,
 	media: media,
 	line: line, relay: relay,
+	history_changed: (h) => {
+		let f = fs.open(HISTORY_FILE + '.new', 'w');
+		if (f) {
+			f.write(sprintf('%J', h));
+			f.close();
+			fs.rename(HISTORY_FILE + '.new', HISTORY_FILE);
+		}
+	},
 	bindings_changed: (b) => {
 		let f = fs.open(BINDINGS + '.new', 'w');
 		if (f) {
@@ -244,6 +259,28 @@ try { saved = json(fs.readfile(BINDINGS) ?? 'null'); } catch (e) { saved = null;
 let restored = core.restore(saved);
 if (restored)
 	log('info', sprintf('sipd: %d registration(s) restored from %s', restored, BINDINGS));
+try { saved = json(fs.readfile(HISTORY_FILE) ?? 'null'); } catch (e) { saved = null; }
+core.restore_history(saved);
+
+// ---- ubus: what a status page shows (luci-app-wwand-ims) ---------------------------------
+// Every method takes ubus_rpc_session, as LuCI sends it (wwand's rule).
+let ubus_obj = bus.publish('wwand-ims', {
+	status: {
+		args: { ubus_rpc_session: '' },
+		call: (req) => ({
+			backend: backend, modem: modem, listen: listen_ip, port: port, started: started, now: time(),
+			ue: line ? line.status() : null,
+			extensions: core.extensions(),
+			call: core.current(),
+		}),
+	},
+	calls: {
+		args: { ubus_rpc_session: '' },
+		call: (req) => ({ now: time(), calls: core.history() }),
+	},
+});
+if (!ubus_obj)
+	log('warn', sprintf('sipd: cannot publish ubus object wwand-ims: %s', ubus.error()));
 
 // publish the UE line's state so `wwandctl status` (the ims plugin) can show it
 let emit_ue_status = (state) => {

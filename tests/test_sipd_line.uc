@@ -242,12 +242,53 @@ inv = last();
 i4b.ev('ended', { reason: 'cancelled' });
 core.on_packet(pbx_resp(200, PBX_ANSWER), PBX);
 eq(map(slice(sent, -2), (x) => x.msg.method), [ 'ACK', 'BYE' ], 'in: a 200 crossing the CANCEL -> ACK, then BYE');
+// a call that was up and is over: the PBX's repeated 200 (our ACK lost) is ACKed again, no BYE
+let i4c = incoming(true);
+inv = last();
+core.on_packet(pbx_resp(200, PBX_ANSWER), PBX);
+i4c.ev('ended', { reason: 'remote' });
+eq(last().method, 'BYE', 'in: the network hangs up -> BYE to the PBX');
+let n4c = length(sent);
+core.on_packet(pbx_resp(200, PBX_ANSWER), PBX);
+eq([ length(sent), last().method ], [ n4c + 1, 'ACK' ], 'in: a repeated 200 after the end -> ACK only');
 
 // a second call while one runs: busy
+clock = 1010;
 let i5 = incoming(true);
 let i6 = incoming(true);
 eq(i6.lc.did, [ 'reject 486' ], 'in: a second incoming call while one runs -> 486');
+let cur = core.current();
+eq([ cur.dir, cur.number, cur.extension, cur.state, cur.start, cur.backend ],
+	[ 'in', '+491622000000', 'asterisk', 'calling', 1010, 'ue' ], 'current: the ringing incoming call');
+clock = 1040;
 i5.ev('ended', { reason: 'remote' });
+eq(core.current(), null, 'current: none after it ended');
+
+// ---- the call history (ubus calls) ------------------------------------------------------
+let h = core.history();
+eq(length(h), 10, 'history: the last 10 calls');
+eq([ h[0].dir, h[0].result, h[0].reason, h[0].start, h[0].end, h[0].answered ],
+	[ 'in', 'missed', 'IMS side ended (remote)', 1010, 1040, null ], 'history: newest first, unanswered = missed');
+eq([ h[1].result, h[1].reason, h[1].extension ], [ 'missed', 'busy', 'asterisk' ], 'history: the busy reject is in it');
+eq([ h[3].result, h[4].result ], [ 'missed', 'missed' ], 'history: calls the network cancelled are missed');
+eq([ h[5].result, h[5].reason ], [ 'declined', 'phone 486' ], 'history: the PBX 486 = declined');
+let ans = filter(h, (r) => r.result == 'answered');
+ok(length(ans) >= 1 && ans[0].codec == 'AMR-WB' && ans[0].backend == 'ue' && ans[0].answered != null,
+	'history: an answered call with its codec');
+let hist_saved = null;
+env.history_changed = (x) => { hist_saved = x; };
+let i7 = incoming(true);
+i7.ev('ended', { reason: 'cancelled' });
+eq([ length(hist_saved), hist_saved[0].result ], [ 10, 'missed' ], 'history: handed to history_changed, still 10');
+let c2 = CORE.create(env);
+eq(c2.restore_history([ { start: 1, result: 'answered' }, 'junk', { result: 'no start' } ]), 1,
+	'restore_history: only well-formed records');
+eq([ c2.restore_history({ start: 1 }), c2.restore_history(null), c2.history() ], [ 0, 0, [] ],
+	'restore_history: not a list -> empty');
+eq(c2.extensions(), { asterisk: { registered: false } }, 'extensions: a fresh core knows the user, not registered');
+let ex = core.extensions().asterisk;
+eq([ ex.registered, ex.address, ex.port, ex.transport ], [ true, '10.0.248.22', 6060, 'UDP' ],
+	'extensions: the registered PBX');
 
 // registrations survive a restart: persisted on change, restored if not expired
 let persisted = null;
