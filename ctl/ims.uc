@@ -161,9 +161,13 @@ function setup_sections(o)
 		  opts: { type: 'vrf', name: vrf, table: table }, lists: { ports: [ ifc ] } },
 		{ config: 'network', name: vrf + '_vrf', type: 'interface', opts: { proto: 'none', device: vrf } },
 		{ config: 'network', name: ifc, type: 'interface', opts: net },
+		// the VoWiFi tunnel's VRF and XFRM interface (wwand-ims-vowifi,
+		// ims_modem option access 'vowifi') in the same zone: without them
+		// the replies to the UE's protected ports are rejected (HW 2026-11-21);
+		// listed always, a device that is not there matches nothing
 		{ config: 'firewall', name: vrf, type: 'zone',
 		  opts: { name: vrf, input: 'REJECT', output: 'ACCEPT', forward: 'REJECT' },
-		  lists: { network: [ ifc ], device: [ vrf ] } },
+		  lists: { network: [ ifc ], device: [ vrf, 'imswifi', 'imswifi0' ] } },
 		{ config: 'firewall', name: vrf + '_esp', type: 'rule',
 		  opts: { name: 'IMS-ESP', src: vrf, proto: 'esp', target: 'ACCEPT' } },
 		{ config: 'firewall', name: vrf + '_sip', type: 'rule',

@@ -18,7 +18,7 @@
 // not every phone and network sends RTCP), no RTCP for that long. The
 // caller ends the call. Comfort noise keeps a muted side alive (SID frames).
 //
-//   let r = RELAY.create({ socket, uloop, lan_ip, ims_ip (or a function), vrf, log, base, span,
+//   let r = RELAY.create({ socket, uloop, lan_ip, ims_ip (or a function), vrf (or a function), log, base, span,
 //                          rtp_timeout, rtcp_timeout (seconds, or functions), now (ms, tests) })
 //   let m = r.alloc()           -> { id, lan_port, ims_port } or null
 //   r.connect(m, { lan: { address, port }, ims: { address, port }, ims_pt })
@@ -49,11 +49,13 @@ export function create(o)
 			s.close();
 			return null;
 		}
-		// IP_FREEBIND on the VRF (IMS) leg: bind to the cellular /32 even before
-		// the kernel sees it as local (see line_ue.uc / the l3mdev hotplug).
-		if (vrf)
-			s.setopt(fam == socket.AF_INET6 ? socket.IPPROTO_IPV6 : socket.IPPROTO_IP,
-				fam == socket.AF_INET6 ? socket.IPV6_FREEBIND : socket.IP_FREEBIND, 1);
+		// IP_FREEBIND: the IMS leg binds to the cellular /32 even before the
+		// kernel sees it as local (see line_ue.uc / the l3mdev hotplug), and
+		// over VoWiFi to the tunnel's address in its VRF with no device bound
+		// (line_ue does the same); without it every incoming call over VoWiFi
+		// got 503, the relay had no ports (HW 2026-11-21). Harmless on the LAN.
+		s.setopt(fam == socket.AF_INET6 ? socket.IPPROTO_IPV6 : socket.IPPROTO_IP,
+			fam == socket.AF_INET6 ? socket.IPV6_FREEBIND : socket.IP_FREEBIND, 1);
 		if (!s.bind({ address: addr, port: port })) {
 			s.close();
 			return null;
@@ -89,7 +91,10 @@ export function create(o)
 		if (!lan)
 			return null;
 		let ims_ip = (type(o.ims_ip) == 'function') ? o.ims_ip() : o.ims_ip;
-		let ims = ims_ip ? alloc_pair(ims_ip, o.vrf, base) : null;
+		// the IMS side's VRF: the IMS PDN's, or (VoWiFi) the tunnel's, which
+		// a function gives as it is now
+		let vrf = (type(o.vrf) == 'function') ? o.vrf() : o.vrf;
+		let ims = ims_ip ? alloc_pair(ims_ip, vrf, base) : null;
 		if (!ims) {
 			close_pair(lan);
 			return null;

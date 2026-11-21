@@ -185,7 +185,37 @@ const UE_EVENT = 'wwand.ims.ue';
 
 // ---- the UE line (backend 'ue') -------------------------------------------------------------
 
-let core = null, line = null, relay = null;
+let core = null, line = null, relay = null, vowifi = null;
+
+// ims_modem option access 'vowifi': the UE's IMS goes through an IKEv2
+// tunnel to the operator's ePDG instead of the IMS PDN (wwand-ims-vowifi,
+// its modules loaded only then)
+let access = im?.access ?? 'pdn';
+
+if (backend == 'ue' && access == 'vowifi') {
+	let VICI = null, CTL = null;
+	try {
+		let v = require('vowifi_lazy');
+		VICI = v.VICI;
+		CTL = v.CTL;
+	}
+	catch (e) { VICI = null; }
+	if (!VICI || !CTL) {
+		log('error', 'sipd: access vowifi needs the package wwand-ims-vowifi');
+		exit(1);
+	}
+	let st = bus.call('wwand', 'status', {});
+	let m = st?.modems?.[modem ?? im.modem];
+	if (!m?.imsi) {
+		// procd starts sipd again; by then the modem has read its card
+		log('warn', sprintf('sipd: vowifi: modem %s has no IMSI yet', modem ?? im.modem ?? '?'));
+		exit(1);
+	}
+	vowifi = CTL.create({ vici: VICI.create({ socket: socket, uloop: uloop, log: log }), uloop: uloop, log: log,
+		run: (argv) => system(argv), imsi: m.imsi, mnc_len: im.mnc_len ? +im.mnc_len : LINE.home_mnc_len(m),
+		if_id: +(im.vowifi_if_id ?? 7001), dev: im.vowifi_dev ?? 'imswifi0', vrf: im.vowifi_vrf ?? 'imswifi',
+		table: +(im.vowifi_table ?? 31), epdg: im.epdg, apn: im.vowifi_apn });
+}
 
 if (backend == 'ue') {
 	let xfrm = null;
@@ -197,7 +227,7 @@ if (backend == 'ue') {
 		exit(1);
 	}
 	relay = RELAY.create({ socket: socket, uloop: uloop, lan_ip: listen_ip,
-		ims_ip: () => line?.ue_addr(), vrf: im.vrf, log: log,
+		ims_ip: () => line?.ue_addr(), vrf: () => vowifi ? vowifi.access()?.bind : im.vrf, log: log,
 		base: +(im.rtp_base ?? 40000), span: +(im.rtp_span ?? 200),
 		rtp_timeout: () => line?.profile()?.rtp_timeout,
 		rtcp_timeout: () => line?.profile()?.rtcp_timeout });
@@ -208,6 +238,7 @@ if (backend == 'ue') {
 		apn: im.ims_apn ?? cur.get('network', im.ims_iface ?? 'wwims', 'apn'),
 		mnc_len: im.mnc_len ? +im.mnc_len : null,
 		pcscf: im.pcscf, relay: relay, log: log, trace: trace,
+		access: vowifi ? (() => vowifi.access()) : null,
 		// SMS over IP (ims_modem option smsip): what arrives is written into
 		// the modem's own store (option sms_storage, ME or SM), as if the
 		// modem had received it, and managed there like any SMS
@@ -283,6 +314,7 @@ let ubus_obj = bus.publish('wwand-ims', {
 		call: (req) => ({
 			backend: backend, modem: modem, listen: listen_ip, port: port, started: started, now: time(),
 			ue: line ? line.status() : null,
+			vowifi: vowifi ? vowifi.status() : null,
 			extensions: core.extensions(),
 			call: core.current(),
 		}),
@@ -321,6 +353,9 @@ let emit_ue_status = (state) => {
 if (line) {
 	let ue_tick;
 	ue_tick = () => { emit_ue_status(); uloop.timer(5000, ue_tick); };
+	// over VoWiFi the tunnel first; the line retries until it is up
+	if (vowifi)
+		vowifi.start((err) => err ? log('warn', sprintf('sipd: vowifi: %J', err)) : line.retry_now());
 	line.start();
 	ue_tick();
 }
@@ -338,7 +373,7 @@ let stop = () => {
 	if (!line)
 		return uloop.end();
 	uloop.timer(5000, () => uloop.end());
-	line.stop(() => uloop.end());
+	line.stop(() => vowifi ? vowifi.stop(() => uloop.end()) : uloop.end());
 };
 signal('SIGTERM', stop);
 signal('SIGINT', stop);
@@ -423,5 +458,6 @@ uloop.handle(tcp.fileno(), () => {
 
 log('info', sprintf('sipd: listening on UDP and TCP %s:%d for %s, modem %s, backend %s%s',
 	listen_ip, port, join(',', keys(users)), modem, backend,
-	line ? sprintf(' (IMS PDN %s, VRF %s)', im.ims_iface ?? 'wwims', im.vrf ?? '-') : ', codecs ' + join(',', codecs)));
+	vowifi ? sprintf(' (VoWiFi to %s)', vowifi.status().epdg ?? '?')
+	: (line ? sprintf(' (IMS PDN %s, VRF %s)', im.ims_iface ?? 'wwims', im.vrf ?? '-') : ', codecs ' + join(',', codecs))));
 uloop.run();

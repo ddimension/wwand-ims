@@ -51,6 +51,8 @@ config zone 'ims'
 	option forward 'REJECT'
 	list network 'wwims'
 	list device 'ims'
+	list device 'imswifi'           # VoWiFi (wwand-ims-vowifi): the tunnel's
+	list device 'imswifi0'          #   VRF and XFRM interface
 
 config rule 'ims_esp'
 	option name 'IMS-ESP'

@@ -19,6 +19,10 @@ ln -sfn ../sipd/relay.uc "$TESTDIR/sipd_relay.uc"
 ln -sfn ../sipd/profile.uc "$TESTDIR/sipd_profile.uc"
 ln -sfn ../ue/regevent.uc "$TESTDIR/ue_regevent.uc"
 ln -sfn ../ue/smsip.uc "$TESTDIR/ue_smsip.uc"
+ln -sfn ../vowifi/vici.uc "$TESTDIR/vowifi_vici.uc"
+ln -sfn ../vowifi/card.uc "$TESTDIR/vowifi_card.uc"
+ln -sfn ../vowifi/tunnel.uc "$TESTDIR/vowifi_tunnel.uc"
+ln -sfn ../vowifi/ctl.uc "$TESTDIR/vowifi_ctl.uc"
 ln -sfn ../ctl/ims.uc "$TESTDIR/ctl_ims.uc"
 ln -sfn ../ctl/mcfg.uc "$TESTDIR/ims_mcfg.uc"
 
@@ -55,7 +59,7 @@ if [ "${BYTECODE:-0}" = 1 ]; then
 	grep -qx bytecode "$UC_BUILD/ucode-mode" ||
 		{ echo "$UCODE cannot emit bytecode" >&2; exit 1; }
 	n=0
-	for f in "$UC_BUILD"/ucode/wwand-ims/*.uc; do
+	for f in "$UC_BUILD"/ucode/wwand-ims/*.uc "$UC_BUILD"/ucode/wwand-ims-vowifi/*.uc; do
 		# only the names the suite loads (linked above); the programs are not
 		[ -L "$TESTDIR/$(basename "$f")" ] || continue
 		ln -sfn "$f" "$TESTDIR/$(basename "$f")"

@@ -262,10 +262,35 @@ What follows for wwand-ims:
 
 Open for a router:
 - **WLAN on a router** would be its fixed-line WAN as the non-3GPP access.
-- **ePDG tunnel:** whether a USB/M.2 module like the RG650E can carry IMS
-  through such a tunnel (IKEv2/EAP-AKA to the operator's ePDG), and what
-  the AP has to signal for it, is not established. The 8T capture shows
-  the Android side only. Nothing of this is built yet.
+- **ePDG tunnel (wwand-ims-vowifi), HW 2026-11-21, NR7101 / RG502Q,
+  Telekom DE:** the router's own UE registers over VoWiFi
+  (`ims_modem` option `access 'vowifi'`). charon (the feed's strongswan:
+  eap-aka with fips-prf, p-cscf, and the new ext-aka card plugin) is driven
+  over vici only: `vowifi/ctl.uc` loads the connection (NAI
+  `0<IMSI>@nai.epc…`, no IDr, virtual IPs, if_id 7001), initiates it, takes
+  the P-CSCFs from charon's log and the inner address from list-sas, and
+  puts it on the XFRM interface `imswifi0` in VRF `imswifi` (table 31, a rule
+  from the inner address). EAP-AKA runs on the modem's USIM: ext-aka execs
+  `/usr/libexec/strongswan/ext-aka`, `vowifi/card.uc` does the AUTHENTICATE
+  over wwand's APDU channel. What Telekom's ePDG does: IKE_SA_INIT asks for
+  MODP_4096 (AES-CBC-256/HMAC-SHA2-512/PRF-SHA2-512 chosen), NAT-T, the
+  first IKE_AUTH answer carries its IDr (`nai.epc.mnc001.mcc262.
+  3gppnetwork.org`, not the APN) and an EAP-AKA request, no certificate
+  (EAP-only), then one IPv6 address and two IPv6 P-CSCFs. What it took:
+  - an IDr `ims` makes charon insist on that identity back: no IDr;
+  - `remote.auth = eap-aka` (EAP-only), `pubkey` fails the constraint;
+  - charon settings vici cannot carry, shipped as files by the package:
+    `p-cscf.enable.wwand-vowifi` (else no P-CSCF request) and
+    `install_virtual_ip = no`, `install_routes = no` (else the address a
+    second time on br-lan);
+  - the tunnel's VRF and XFRM interface in the IMS firewall zone: the reply
+    to the protected REGISTER comes to the UE's server port, not as a
+    conntrack reply, and fw4 rejected it (ICMP port unreachable carrying
+    the decrypted 200 OK);
+  - the UE's sockets bound to no device (udp_l3mdev_accept); the sec-agree
+    SAs inside the tunnel need no if_id.
+  Open: calls over VoWiFi (RTP through the tunnel, preconditions without a
+  dedicated bearer), the P-ANI value (`IEEE-802.11` is sent), handover.
 - **GDSP:** the Vodafone product description lists VoWiFi with a separate
   setup; not tested.
 

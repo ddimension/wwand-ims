@@ -70,6 +70,10 @@ return view.extend({
 			st.ue ? [ kv(fmt.ue_rows(st)) ]
 			      : [ empty(_('Backend qmi: the modem registers to IMS itself; its state is on the Modem status page.')) ]));
 
+		var vw = fmt.vowifi_rows(st);
+		if (vw.length)
+			parts.push(section(_('VoWiFi'), [ kv(vw) ]));
+
 		parts.push(section(_('Gateway'), [ kv(fmt.gw_rows(st)) ]));
 
 		var ex = fmt.ext_rows(st);

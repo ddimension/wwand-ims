@@ -17,3 +17,7 @@ tests/sipd_relay.uc
 tests/sipd_profile.uc
 tests/ue_regevent.uc
 tests/ue_smsip.uc
+tests/vowifi_vici.uc
+tests/vowifi_card.uc
+tests/vowifi_tunnel.uc
+tests/vowifi_ctl.uc

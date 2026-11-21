@@ -6,7 +6,9 @@
 #   ucode/wwand/      -> /usr/share/ucode/wwand   (plugin, wwandctl command)
 #   ucode/wwand-ims/  -> /usr/share/wwand-ims     (sipd and the UE, loaded with
 #                                                  `ucode -L /usr/share/wwand-ims`)
-# The feed Makefile copies these two trees and nothing else, so this file is
+#   ucode/wwand-ims-vowifi/ -> /usr/share/wwand-ims as well, but in the package
+#                      wwand-ims-vowifi (VoWiFi: the ePDG tunnel over strongSwan)
+# The feed Makefile copies these trees and nothing else, so this file is
 # the one place that says what ships and under which name.
 #
 # The approach is wwand's (its repo-root CMakeLists.txt): one compiler call per
@@ -50,12 +52,18 @@ set(IMS_UCODE_MODULES
   sipd/line_ue.uc=wwand-ims/sipd_line_ue.uc
   sipd/profile.uc=wwand-ims/sipd_profile.uc
   sipd/relay.uc=wwand-ims/sipd_relay.uc
+  vowifi/vici.uc=wwand-ims-vowifi/vowifi_vici.uc
+  vowifi/card.uc=wwand-ims-vowifi/vowifi_card.uc
+  vowifi/tunnel.uc=wwand-ims-vowifi/vowifi_tunnel.uc
+  vowifi/ctl.uc=wwand-ims-vowifi/vowifi_ctl.uc
 )
 
 # programs (shebang) -> -c, the interpreter line is kept
 set(IMS_UCODE_PROGRAMS
   sipd/sipd.uc=wwand-ims/sipd.uc
   tools/ims-register.uc=wwand-ims/ims-register.uc
+  vowifi/ext_aka.uc=wwand-ims-vowifi/vowifi_ext_aka.uc
+  vowifi/cli.uc=wwand-ims-vowifi/vowifi_cli.uc
 )
 
 # require()d scripts -> copied as source
@@ -65,6 +73,7 @@ set(IMS_UCODE_PLAIN
   ctl/mcfg.uc=wwand/ims_mcfg.uc
   sipd/core.uc=wwand-ims/sipd_core.uc
   sipd/sip.uc=wwand-ims/sipd_sip.uc
+  vowifi/lazy.uc=wwand-ims-vowifi/vowifi_lazy.uc
 )
 
 # in a shipped directory but not installed: development tools
@@ -120,7 +129,8 @@ endforeach()
 
 # the only glob here, and only to check the lists against the tree
 file(GLOB _on_disk RELATIVE ${SRC}
-  ${SRC}/plugins/*.uc ${SRC}/ctl/*.uc ${SRC}/sipd/*.uc ${SRC}/ue/*.uc ${SRC}/tools/*.uc)
+  ${SRC}/plugins/*.uc ${SRC}/ctl/*.uc ${SRC}/sipd/*.uc ${SRC}/ue/*.uc ${SRC}/tools/*.uc
+  ${SRC}/vowifi/*.uc)
 foreach(f IN LISTS _on_disk)
   if(NOT f IN_LIST _listed)
     message(FATAL_ERROR "${f} is not listed in CMakeLists.txt (add it to "

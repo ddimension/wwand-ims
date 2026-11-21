@@ -52,6 +52,12 @@ var REG_EVENT = {
 	failed: _('subscription failed'),
 };
 
+var TUNNEL = {
+	up: _('up'),
+	connecting: _('connecting'),
+	down: _('down'),
+};
+
 var CALL_STATES = {
 	trying: _('dialling'),
 	calling: _('ringing the phone'),
@@ -114,6 +120,25 @@ return baseclass.extend({
 		rows.push([ _('SMS over IMS'), ue.smsip ? _('on') : _('off') ]);
 		if (ue.reg_event)
 			rows.push([ _('Registration events'), REG_EVENT[ue.reg_event] || ue.reg_event ]);
+		return rows;
+	},
+
+	/* the VoWiFi tunnel (st.vowifi) as rows, [] without it */
+	vowifi_rows: function(st) {
+		var v = st && st.vowifi;
+		if (!v)
+			return [];
+		var rows = [
+			[ _('Tunnel'), TUNNEL[v.state] || v.state || '?' ],
+			[ _('ePDG'), v.epdg || '-' ],
+		];
+		if (v.v6 || v.v4)
+			rows.push([ _('Inner address'), [ v.v6, v.v4 ].filter(function(x) { return x; }).join(', ') ]);
+		if (v.pcscf && v.pcscf.length)
+			rows.push([ _('P-CSCF'), v.pcscf.join(', ') ]);
+		rows.push([ _('Interface'), '%s (VRF %s)'.format(v.dev || '?', v.vrf || '?') ]);
+		if (v.state != 'up' && v.error)
+			rows.push([ _('Last error'), String(v.error) ]);
 		return rows;
 	},
 

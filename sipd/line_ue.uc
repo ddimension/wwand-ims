@@ -12,6 +12,7 @@
 //   line.status() -> { state, ue_addr, pcscf, impu, expires, profile, reg_event }
 //   line.profile() -> the operator profile's values in use (sipd/profile.uc ue_opts)
 //   line.sms_send(number, text, cb)       an SMS over IMS (option smsip), cb(err, { parts, refs })
+//   line.retry_now()                      register at once when down (the access came up)
 //   line.stop(cb)                         de-REGISTER, SAs and sockets down
 //
 // SMS over IP (o.smsip, ue/smsip.uc): the registration carries
@@ -273,25 +274,40 @@ export function create(o)
 	let discover = (light) => {
 		let st = bus.call('wwand', 'status', {});
 		let m = st?.modems?.[o.modem];
-		let ctx = st?.contexts?.[o.iface];
-		if (!m?.imsi || !ctx)
-			return { error: sprintf('modem %s / interface %s not ready in wwand', o.modem, o.iface) };
-
-		let ifst = bus.call(sprintf('network.interface.%s', o.iface), 'status', {});
-		if (!ifst?.up)
-			return { error: sprintf('interface %s is down', o.iface) };
-		let v6 = null;
-		for (let a in ifst['ipv6-address'] ?? [])
-			if (!match(a.address, /^fe80/))
-				v6 = a.address;
-		let v4 = ifst['ipv4-address']?.[0]?.address;
-
-		// a fixed one from the config, else QMI through wwand, else AT
 		let fixed = (type(o.pcscf) == 'array') ? o.pcscf : (o.pcscf ? [ o.pcscf ] : []);
-		let pcscf = length(fixed) ? fixed : pcscf_from_status(ctx);
-		if (!length(pcscf)) {
-			let r = at('AT+CGCONTRDP');
-			pcscf = pcscf_from_cgcontrdp(r?.response, o.apn ?? ctx.apn ?? 'ims');
+		let v4, v6 = null, pcscf, acc = null;
+
+		if (o.access) {
+			// VoWiFi (vowifi/ctl.uc): the tunnel's inner addresses and the
+			// P-CSCFs the ePDG named, in the tunnel's VRF; no IMS PDN
+			if (!m?.imsi)
+				return { error: sprintf('modem %s not ready in wwand', o.modem) };
+			acc = o.access();
+			if (!acc)
+				return { error: 'the VoWiFi tunnel is not up' };
+			v4 = acc.v4;
+			v6 = acc.v6;
+			pcscf = length(fixed) ? fixed : (acc.pcscf ?? []);
+		}
+		else {
+			let ctx = st?.contexts?.[o.iface];
+			if (!m?.imsi || !ctx)
+				return { error: sprintf('modem %s / interface %s not ready in wwand', o.modem, o.iface) };
+
+			let ifst = bus.call(sprintf('network.interface.%s', o.iface), 'status', {});
+			if (!ifst?.up)
+				return { error: sprintf('interface %s is down', o.iface) };
+			for (let a in ifst['ipv6-address'] ?? [])
+				if (!match(a.address, /^fe80/))
+					v6 = a.address;
+			v4 = ifst['ipv4-address']?.[0]?.address;
+
+			// a fixed one from the config, else QMI through wwand, else AT
+			pcscf = length(fixed) ? fixed : pcscf_from_status(ctx);
+			if (!length(pcscf)) {
+				let r = at('AT+CGCONTRDP');
+				pcscf = pcscf_from_cgcontrdp(r?.response, o.apn ?? ctx.apn ?? 'ims');
+			}
 		}
 		let six = filter(pcscf, (a) => index(a, ':') >= 0);
 		let fam = (v6 && length(six)) ? 6 : 4;
@@ -301,8 +317,8 @@ export function create(o)
 		if (!ue || !p)
 			return { error: sprintf('no UE address or P-CSCF (ipv6 %s, ipv4 %s, P-CSCF %J)', v6 ?? '-', v4 ?? '-', pcscf) };
 
-		let pani = light ? null : pani_of(bus.call('wwand', 'modem_cells', { modem: o.modem }));
-		if (!pani && !light) {
+		let pani = acc ? acc.pani : (light ? null : pani_of(bus.call('wwand', 'modem_cells', { modem: o.modem })));
+		if (!pani && !light && !acc) {
 			// no QMI cell info (an AT-only or NCM modem): Quectel's own report
 			let q = at('AT+QENG="servingcell"');
 			let mm = match(q?.response?.[0] ?? '',
@@ -312,7 +328,8 @@ export function create(o)
 		}
 
 		return { imsi: m.imsi, imei: m.imei, mnc_len: o.mnc_len ?? home_mnc_len(m),
-		         fam: fam, ue_addr: ue, pcscf: p, pcscfs: cand, pani: pani, prof: profile_of(m) };
+		         fam: fam, ue_addr: ue, pcscf: p, pcscfs: cand, pani: pani, prof: profile_of(m),
+		         vrf: acc ? acc.bind : o.vrf, vowifi: !!acc };
 	};
 
 	// ---- one registration's transport --------------------------------------------
@@ -343,8 +360,8 @@ export function create(o)
 			let s = socket.create(AF, socket.SOCK_DGRAM);
 			if (!s)
 				return fail(null, 'socket');
-			if (o.vrf && !s.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, o.vrf))
-				return fail(s, sprintf('bind to VRF %s', o.vrf));
+			if (env.vrf && !s.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, env.vrf))
+				return fail(s, sprintf('bind to VRF %s', env.vrf));
 			freebind(s);
 			s.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
 			if (!s.bind({ address: env.ue_addr, port: port }))
@@ -355,8 +372,8 @@ export function create(o)
 		if (env.prof?.tcp === false)
 			return t;
 		let l = socket.create(AF, socket.SOCK_STREAM);
-		if (l && o.vrf)
-			l.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, o.vrf);
+		if (l && env.vrf)
+			l.setopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, env.vrf);
 		freebind(l);
 		l?.setopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1);
 		if (l && l.bind({ address: env.ue_addr, port: pair[1] }) && l.listen(4))
@@ -414,7 +431,7 @@ export function create(o)
 			imsi: env.imsi, mnc_len: env.mnc_len, imei: env.imei,
 			ue_addr: env.ue_addr, pcscf_addr: env.pcscf, port_c: pair[0], port_s: pair[1],
 			pani: env.pani, card: AKA.wwand_card(ubus_call, o.modem, o.slot), xfrm: o.xfrm,
-			smsip: !!o.smsip, sa_opts: o.vrf ? {} : null, reqid: 0x1500 + 0x10 * pair_ix,
+			smsip: !!o.smsip, sa_opts: env.vrf ? {} : null, reqid: 0x1500 + 0x10 * pair_ix,
 			t1: env.prof?.t1, t2: env.prof?.t2, expires: env.prof?.expires,
 			algs: env.prof?.algs, ealgs: env.prof?.ealgs,
 			user_agent: env.prof?.user_agent, pcscf_port: env.prof?.pcscf_port,
@@ -733,7 +750,8 @@ export function create(o)
 			alert_delay: r.env.prof?.alert_delay,
 			timer: (ms, fn) => uloop.timer(ms, fn),
 			log: (lvl, msg) => log(lvl, 'ue: ' + msg),
-			send: r.send, qos_wait: qos_wait,
+			// over VoWiFi there is no dedicated bearer to wait for
+			send: r.send, qos_wait: r.env.vowifi ? null : qos_wait,
 		});
 		calls[c.call_id] = c;
 		return c;
@@ -817,6 +835,13 @@ export function create(o)
 	});
 
 	self.profile = () => prof;
+
+	// register now instead of at the next retry: the access came up
+	// (sipd, once the VoWiFi tunnel stands)
+	self.retry_now = function() {
+		if (self.state == 'down')
+			set_timer('reg', 0, register);
+	};
 
 	self.sms_send = function(number, text, cb) {
 		if (!o.smsip)

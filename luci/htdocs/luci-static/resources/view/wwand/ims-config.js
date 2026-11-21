@@ -117,11 +117,24 @@ return view.extend({
 		o.value('qmi', _('Modem IMS (QMI)'));
 		o.default = 'qmi';
 
+		o = s.option(form.ListValue, 'access', _('IMS access'),
+			_('IMS PDN: over the modem\'s IMS connection. VoWiFi: through an IKEv2 tunnel to the operator\'s ePDG over the router\'s internet connection (package wwand-ims-vowifi).'));
+		o.value('pdn', _('IMS PDN'));
+		o.value('vowifi', _('VoWiFi (ePDG)'));
+		o.default = 'pdn';
+		o.depends('backend', 'ue');
+
+		o = s.option(form.Value, 'epdg', _('ePDG'),
+			_('Default: epdg.epc.mnc<MNC>.mcc<MCC>.pub.3gppnetwork.org from the SIM.'));
+		o.datatype = 'host';
+		o.rmempty = true;
+		o.depends('access', 'vowifi');
+
 		o = s.option(widgets.NetworkSelect, 'ims_iface', _('IMS interface'),
 			_('The interface (proto wwand) of the IMS PDN.'));
 		o.nocreate = true;
 		o.placeholder = 'wwims';
-		o.depends('backend', 'ue');
+		o.depends({ backend: 'ue', access: 'pdn' });
 
 		o = s.option(form.Value, 'vrf', _('VRF'), _('The VRF device the IMS interface is in.'));
 		o.placeholder = 'ims';
