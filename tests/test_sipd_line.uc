@@ -350,4 +350,32 @@ let wd2 = wd_call('wd2@pbx');
 eq(last().status, 200, 'media dead: the next call goes through');
 wd2.d.ev('ended', { reason: 'bye' });
 
+// ---- a diverted call: a landline forwarded to this number ---------------------------
+// History-Info as an IMS network sends it (TS 24.604): the landline, then the
+// mobile number as the new target with cause 302 (unconditional)
+let HI = [ '<sip:+495215550100@ims.example.net;user=phone>;index=1',
+	'<sip:+4915550000001@ims.example.net;user=phone;cause=302>;index=1.1;mp=1' ];
+let dv_events = null;
+let dv_lc = fake_lc({ answer: OUR_IMS_ANSWER, offer: NET_OFFER, accept_ok: true });
+core.on_line_incoming({ call: dv_lc, media: env.relay.alloc(), number: '+491622000000', called: '+4915550000001',
+	history: [ join(', ', HI) ], diversion: [], set: (ev) => { dv_events = ev; } });
+inv = last();
+eq(S.all(inv, 'history-info'), HI, 'diverted: History-Info passed on as the network sent it');
+eq(S.get(inv, 'diversion'), '<sip:+495215550100@192.168.203.245>;reason=unconditional;counter=1',
+	'diverted: a Diversion with the forwarding number and the reason');
+dv_events('ended', { reason: 'cancelled' });
+
+// the network's own Diversion is preferred
+core.on_line_incoming({ call: fake_lc({ answer: OUR_IMS_ANSWER, offer: NET_OFFER, accept_ok: true }), media: env.relay.alloc(),
+	number: '+491622000000', called: '+4915550000001', history: [ join(', ', HI) ],
+	diversion: [ '<tel:+495215550100>;reason=user-busy' ], set: (ev) => { dv_events = ev; } });
+eq(S.get(last(), 'diversion'), '<tel:+495215550100>;reason=user-busy', 'diverted: the network\'s Diversion as it came');
+dv_events('ended', { reason: 'cancelled' });
+
+// not diverted: neither header
+core.on_line_incoming({ call: fake_lc({ answer: OUR_IMS_ANSWER, offer: NET_OFFER, accept_ok: true }), media: env.relay.alloc(),
+	number: '+491622000000', called: '+4915550000001', set: (ev) => { dv_events = ev; } });
+ok(S.get(last(), 'diversion') == null && S.get(last(), 'history-info') == null, 'not diverted: no Diversion, no History-Info');
+dv_events('ended', { reason: 'cancelled' });
+
 done();

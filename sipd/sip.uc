@@ -370,6 +370,70 @@ function auth_check(a, method, password)
 	return lc(a.response) == want;
 }
 
+// ---- call diversion: History-Info (RFC 7044) -> Diversion (RFC 5806) ----
+// The IMS network reports a forwarded call (TS 24.604 CDIV) in History-Info:
+// one entry per hop, in order; the new target of a diversion carries the
+// RFC 4458 `cause` URI parameter, its parent entry (index minus the last
+// component) is the diverting user. What the subscriber may not see the
+// network leaves out itself (Privacy: history), so it is passed as it comes.
+
+// RFC 4458 cause -> RFC 5806 reason (the mapping of RFC 6044 / TS 29.163)
+const DIVERSION_REASON = {
+	'302': 'unconditional', '486': 'user-busy', '408': 'no-answer', '480': 'deflection',
+	'487': 'deflection', '503': 'unavailable', '404': 'unknown',
+};
+
+// the entries of every History-Info value: { uri, user, index, cause }
+function history_info(values)
+{
+	let out = [];
+	for (let v in values ?? [])
+		for (let e in split_list(v)) {
+			let m = match(e, /<([^>]*)>(.*)$/);
+			if (!m)
+				continue;
+			let uri = m[1];
+			let u = match(uri, /^(tel|sips?):([^@;?>]+)/);
+			let c = match(uri, /;cause=([0-9]{3})/);
+			let ix = match(m[2], /;[ \t]*index=([0-9.]+)/);
+			push(out, { uri: uri, user: u ? u[2] : null, index: ix ? ix[1] : null, cause: c ? c[1] : null });
+		}
+	return out;
+}
+
+// the diversions in History-Info entries, the latest first (Diversion's
+// order): { user, reason, cause }
+function diversions(entries)
+{
+	let out = [];
+	for (let i = 0; i < length(entries); i++) {
+		let e = entries[i];
+		if (!e.cause)
+			continue;
+		let from = null;
+		if (e.index && index(e.index, '.') > 0) {
+			let parent = replace(e.index, /\.[0-9]+$/, '');
+			for (let x in entries)
+				if (x.index == parent)
+					from = x;
+		}
+		from ??= (i > 0) ? entries[i - 1] : null;
+		if (from?.user)
+			unshift(out, { user: from.user, reason: DIVERSION_REASON[e.cause] ?? 'unknown', cause: e.cause });
+	}
+	return out;
+}
+
+// Diversion header values for the LAN side (Asterisk: REDIRECTING()); the
+// host is ours, the user the diverting number
+function diversion_headers(divs, host)
+{
+	let out = [];
+	for (let i = 0; i < length(divs); i++)
+		push(out, sprintf('<sip:%s@%s>;reason=%s;counter=1', divs[i].user, host, divs[i].reason));
+	return out;
+}
+
 function challenge(realm, nonce)
 {
 	return sprintf('Digest realm="%s", nonce="%s", algorithm=MD5, qop="auth"', realm, nonce);
@@ -380,4 +444,5 @@ return {
 	cseq: cseq, build: build, response: response,
 	CODECS: CODECS, DTMF_PT: DTMF_PT, sdp: sdp, sdp_parse: sdp_parse, sdp_pick: sdp_pick,
 	md5: md5, md5_pure: md5_pure, auth_parse: auth_parse, auth_check: auth_check, challenge: challenge,
+	history_info: history_info, diversions: diversions, diversion_headers: diversion_headers,
 };

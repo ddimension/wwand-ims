@@ -36,7 +36,7 @@ let ctl_for = (modem, epdg) => {
 	if (!m?.imsi)
 		die(sprintf('no modem %s with an IMSI in wwand\n', modem ?? '?'));
 	return CTL.create({ vici: vici, uloop: uloop, log: log, run: (argv) => system(argv),
-		imsi: m.imsi, mnc_len: home_mnc_len(m), if_id: 7001, dev: 'imswifi0', vrf: 'imswifi', table: 31,
+		imsi: m.imsi, mnc_len: home_mnc_len(m), if_id: 7001, dev: 'imswifi0',
 		epdg: epdg });
 };
 

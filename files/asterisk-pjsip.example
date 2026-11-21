@@ -54,6 +54,11 @@ match=192.168.1.1
 ;   [from-wwand-ims]
 ;   ; the called IMS number is in the To: ${CHANNEL(pjsip,local_uri)}
 ;   exten => wwand_ims,1,Dial(PJSIP/phone1,60)
+;   ; a forwarded call (sip_gateway option redirect_info, on by default):
+;   ; sipd sends Diversion (and the network's History-Info), so
+;   ; ${REDIRECTING(from-num)} is the number that forwarded and
+;   ; ${REDIRECTING(reason)} why (unconditional, user-busy, no-answer, ...);
+;   ; the raw History-Info: ${PJSIP_HEADER(read,History-Info)}
 ;
 ;   ; out: the number in E.164 with '+' (the UE refuses national numbers)
 ;   exten => _0X.,1,Dial(PJSIP/wwand_ims_trunk/sip:+49${EXTEN:1}@192.168.1.1,120)

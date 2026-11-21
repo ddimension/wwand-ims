@@ -156,18 +156,36 @@ function setup_sections(o)
 	if (p.index != null)
 		net.profile = sprintf('%d', p.index);
 
+	// VoWiFi (wwand-ims-vowifi, o.vowifi): the tunnel's VRF and its netifd
+	// interface (proto wwandvowifi: netifd puts the inner address, the route
+	// and the `from` rules into the VRF table, as for the IMS PDN), in the
+	// same firewall zone — without it the replies to the UE's protected
+	// ports are rejected (HW 2026-11-21)
+	let vw = o.vowifi;
+	let zone_net = vw ? [ ifc, vw.dev, vw.iface ] : [ ifc ];
+	let zone_dev = [ vrf ];
+	// the XFRM interface itself is netifd's too: OpenWrt's proto xfrm
+	// (package xfrm) creates it with the tunnel's if_id and the MTU; the
+	// addresses go onto it through the alias '@<dev>'. No VRF: netifd 25.12
+	// turns IPv6 off on a VRF port it cannot be told otherwise for (see
+	// vowifi/ctl.uc access()); the table and netifd's rules isolate it.
+	let vowifi = vw ? [
+		{ config: 'network', name: vw.dev, type: 'interface',
+		  opts: { proto: 'xfrm', ifid: sprintf('%d', vw.if_id), mtu: sprintf('%d', vw.mtu) } },
+		{ config: 'network', name: vw.iface, type: 'interface',
+		  opts: { proto: 'wwandvowifi', device: '@' + vw.dev, ip4table: sprintf('%d', vw.table),
+		          ip6table: sprintf('%d', vw.table), peerdns: '0', delegate: '0' } },
+	] : [];
+
 	return [
 		{ config: 'network', name: vrf, type: 'device',
 		  opts: { type: 'vrf', name: vrf, table: table }, lists: { ports: [ ifc ] } },
 		{ config: 'network', name: vrf + '_vrf', type: 'interface', opts: { proto: 'none', device: vrf } },
 		{ config: 'network', name: ifc, type: 'interface', opts: net },
-		// the VoWiFi tunnel's VRF and XFRM interface (wwand-ims-vowifi,
-		// ims_modem option access 'vowifi') in the same zone: without them
-		// the replies to the UE's protected ports are rejected (HW 2026-11-21);
-		// listed always, a device that is not there matches nothing
+		...vowifi,
 		{ config: 'firewall', name: vrf, type: 'zone',
 		  opts: { name: vrf, input: 'REJECT', output: 'ACCEPT', forward: 'REJECT' },
-		  lists: { network: [ ifc ], device: [ vrf, 'imswifi', 'imswifi0' ] } },
+		  lists: { network: zone_net, device: zone_dev } },
 		{ config: 'firewall', name: vrf + '_esp', type: 'rule',
 		  opts: { name: 'IMS-ESP', src: vrf, proto: 'esp', target: 'ACCEPT' } },
 		{ config: 'firewall', name: vrf + '_sip', type: 'rule',
@@ -183,11 +201,15 @@ function setup_sections(o)
 
 // what to do with one section against what is there:
 // { action: 'create'|'ok'|'differs', diff: [ [opt, have, want] ] }
+// what to do with one section against what is there: 'create' (missing),
+// 'ok', 'add' (only list entries missing: added, nothing changed — so a
+// later run adds what a newer package needs, e.g. the VoWiFi interface in
+// the firewall zone), 'differs' (an option set otherwise: only with --force)
 function section_plan(want, have)
 {
 	if (have == null)
-		return { action: 'create', diff: [] };
-	let diff = [];
+		return { action: 'create', diff: [], missing: [] };
+	let diff = [], missing = [];
 	for (let k, v in want.opts)
 		if (have[k] != v)
 			push(diff, [ k, have[k], v ]);
@@ -196,9 +218,10 @@ function section_plan(want, have)
 		h = (type(h) == 'array') ? h : (h != null ? split(h, ' ') : []);
 		for (let x in v)
 			if (index(h, x) < 0)
-				push(diff, [ k, join(' ', h), join(' ', v) ]);
+				push(missing, [ k, x ]);
 	}
-	return { action: length(diff) ? 'differs' : 'ok', diff: diff };
+	let action = length(diff) ? 'differs' : (length(missing) ? 'add' : 'ok');
+	return { action: action, diff: diff, missing: missing };
 }
 
 const L3MDEV_HOTPLUG = '/etc/hotplug.d/iface/25-wwand-ims-l3mdev';
@@ -651,8 +674,17 @@ function cmd_setup(ctx, modem, m, opts)
 	printf('carrier config %s: IMS profile %d, APN "%s", %s (via %s)\n', s.mbn?.name ?? s.mbn?.id ?? '?',
 		s.ims.index, s.ims.apn, pdp_option(s.ims.pdp_type) ?? sprintf('%J', s.ims.pdp_type), s.profiles.via);
 
+	// VoWiFi: its sections too once wwand-ims-vowifi is installed or the
+	// ims_modem asks for it, so a later run adds them to a working setup
+	let im = {};
+	cur.foreach('wwand_ims', 'ims_modem', (x) => { if (!im['.name']) im = x; });
+	let vw = null;
+	if (opts.vowifi !== false && (opts.vowifi || im.access == 'vowifi' ||
+	    fs.stat('/usr/share/wwand-ims/vowifi_lazy.uc') != null))
+		vw = { table: +(im.vowifi_table ?? 31), dev: im.vowifi_dev ?? 'imswifi0',
+		       iface: im.vowifi_iface ?? 'wwvowifi', if_id: +(im.vowifi_if_id ?? 7001), mtu: +(im.vowifi_mtu ?? 1280) };
 	let want = setup_sections({ modem: modem, profile: s.ims, iface: opts.iface, table: opts.table,
-	                            rtp: sprintf('%d-%d', rb, rb + rs - 1) });
+	                            rtp: sprintf('%d-%d', rb, rb + rs - 1), vowifi: vw });
 	let todo = [];
 	for (let w in want) {
 		// sipd reads the first ims_modem section, whatever its name: that one
@@ -662,10 +694,19 @@ function cmd_setup(ctx, modem, m, opts)
 		if (have && have['.type'] != w.type)
 			die(sprintf('%s.%s exists as a %s, not a %s: rename it or pass --iface', w.config, w.name, have['.type'], w.type));
 		let pl = section_plan(w, have);
-		printf('  %-10s %-14s %s\n', w.config, w.name, pl.action == 'differs'
-			? 'differs: ' + join(', ', map(pl.diff, (d) => sprintf('%s %J -> %J', d[0], d[1], d[2]))) : pl.action);
-		if (pl.action == 'create' || (pl.action == 'differs' && opts.force))
-			push(todo, w);
+		let say = pl.action;
+		if (pl.action == 'differs')
+			say = 'differs: ' + join(', ', map(pl.diff, (d) => sprintf('%s %J -> %J', d[0], d[1], d[2]))) +
+				(opts.force ? ' (--force)' : ' (kept; --force sets it)');
+		else if (pl.action == 'add')
+			say = 'add ' + join(', ', map(pl.missing, (x) => sprintf('%s %s', x[0], x[1])));
+		printf('  %-10s %-14s %s\n', w.config, w.name, say);
+		// missing list entries are added always (additive, nothing changes);
+		// an option set otherwise only with --force
+		if (pl.action == 'create' || pl.action == 'add' || (pl.action == 'differs' && opts.force))
+			push(todo, { ...w, only_lists: (pl.action == 'add' || (pl.action == 'differs' && !opts.force)) });
+		else if (pl.action == 'differs' && length(pl.missing))
+			push(todo, { ...w, only_lists: true });
 	}
 	let hook = opts.confdir != null || fs.stat(L3MDEV_HOTPLUG) != null;
 	printf('  %-25s %s\n', 'l3mdev hotplug', hook ? 'ok' : 'create');
@@ -673,7 +714,7 @@ function cmd_setup(ctx, modem, m, opts)
 	if (!opts.apply) {
 		printf('\na dry run: `wwand-ims-setup --apply` writes it%s\n',
 			length(filter(want, (w) => section_plan(w, cur.get_all(w.config, w.name)).action == 'differs'))
-				? ' (sections that differ only with --force)' : '');
+				? ' (options that differ only with --force; missing list entries are added)' : '');
 		return;
 	}
 
@@ -682,7 +723,7 @@ function cmd_setup(ctx, modem, m, opts)
 		let have = cur.get_all(w.config, w.name);
 		if (!have && !cur.set(w.config, w.name, w.type))
 			push(failed, sprintf('%s.%s', w.config, w.name));
-		for (let k, v in w.opts)
+		for (let k, v in w.only_lists ? {} : w.opts)
 			if (!cur.set(w.config, w.name, k, v))
 				push(failed, sprintf('%s.%s.%s', w.config, w.name, k));
 		// lists: what is there stays, the missing entries are added
@@ -827,6 +868,8 @@ function cmd_ims(ctx, args)
 		switch (rest[i]) {
 		case '--apply': opts.apply = true; break;
 		case '--force': opts.force = true; break;
+		case '--vowifi': opts.vowifi = true; break;
+		case '--no-vowifi': opts.vowifi = false; break;
 		case '--no-reset': opts.no_reset = true; break;
 		case '--keep-modem-ims': opts.keep_modem_ims = true; break;
 		case '--iface': opts.iface = rest[++i]; break;
@@ -849,7 +892,7 @@ return {
 	help: [
 		'ims [modem] check                      what the router\'s own IMS UE needs (modem + router)',
 		'ims [modem] fix [--no-reset]           VoLTE FGIs on, the modem\'s own IMS off (Quectel)',
-		'ims [modem] setup [--apply] [--force]  IMS PDN + VRF + firewall + sipd line from the MBN',
+		'ims [modem] setup [--apply] [--force] [--vowifi|--no-vowifi]  IMS PDN (+ VoWiFi) + VRF + firewall + sipd line from the MBN; run again it adds what is missing',
 		'ims [modem] mbn [list|patch|upload]    the VoLTE FGIs into the carrier MBN, load it (new or --replace)',
 		'ims [modem] call <number> [--no-echo]  one test VoLTE call from the router UE (--talk/--ring/--hold S)',
 	],

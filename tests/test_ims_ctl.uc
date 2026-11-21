@@ -63,6 +63,25 @@ let d = T.section_plan(byname['network.wwims'], { ...net, pdp_type: 'ipv6' });
 eq([ d.action, d.diff ], [ 'differs', [ [ 'pdp_type', 'ipv6', 'ipv4v6' ] ] ], 'section_plan: a differing option');
 eq(T.section_plan(byname['network.ims'], { type: 'vrf', name: 'ims', table: '30', ports: [ 'wwims' ] }).action, 'ok',
 	'section_plan: a list that holds the port');
+eq(byname['firewall.ims'].lists, { network: [ 'wwims' ], device: [ 'ims' ] }, 'setup: the zone without VoWiFi');
+d = T.section_plan(byname['firewall.ims'], { name: 'ims', input: 'REJECT', output: 'ACCEPT', forward: 'REJECT', network: 'wwims' });
+eq([ d.action, d.missing ], [ 'add', [ [ 'device', 'ims' ] ] ], 'section_plan: only a list entry missing -> add');
+
+// VoWiFi: the tunnel's VRF, its netifd interface, both in the zone
+let vw = T.setup_sections({ modem: 'wwmodem0', profile: cg[1],
+	vowifi: { table: 31, dev: 'imswifi0', iface: 'wwvowifi', if_id: 7001, mtu: 1280 } });
+let vb = {};
+for (let x in vw)
+	vb[x.config + '.' + x.name] = x;
+ok(!vb['network.imswifi'] && !vb['network.imswifi_vrf'], 'setup vowifi: no VRF (netifd 25.12 turns IPv6 off on VRF ports)');
+eq(vb['network.imswifi0'].opts, { proto: 'xfrm', ifid: '7001', mtu: '1280' }, 'setup vowifi: the XFRM interface by netifd\'s proto xfrm');
+eq(vb['network.wwvowifi'].opts, { proto: 'wwandvowifi', device: '@imswifi0', ip4table: '31', ip6table: '31',
+	peerdns: '0', delegate: '0' }, 'setup vowifi: the addresses on its alias, into the VRF table');
+eq(vb['firewall.ims'].lists, { network: [ 'wwims', 'imswifi0', 'wwvowifi' ], device: [ 'ims' ] }, 'setup vowifi: the tunnel in the zone');
+// a zone set up before VoWiFi: the run afterwards adds the entries, changes nothing
+d = T.section_plan(vb['firewall.ims'], { name: 'ims', input: 'REJECT', output: 'ACCEPT', forward: 'REJECT',
+	network: [ 'wwims' ], device: [ 'ims' ] });
+eq([ d.action, d.missing ], [ 'add', [ [ 'network', 'imswifi0' ], [ 'network', 'wwvowifi' ] ] ], 'setup vowifi: afterwards -> add the missing entries');
 
 // ---- the UE line's readers ------------------------------------------------------------------
 

@@ -5,7 +5,8 @@
 			"ubus": {
 				"wwand-ims": [
 					"status",
-					"calls"
+					"calls",
+					"profile_snapshot"
 				],
 				"wwand": [
 					"status"

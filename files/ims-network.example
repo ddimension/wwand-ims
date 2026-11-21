@@ -42,6 +42,26 @@ config interface 'wwims'
 	                                #   whichever it is (wwand
 	                                #   docs/design/dynamic-profiles.md)
 
+# VoWiFi (package wwand-ims-vowifi, ims_modem option access 'vowifi'): the
+# tunnel to the ePDG with a routing table of its own (no VRF: netifd 25.12
+# turns IPv6 off on VRF ports). netifd creates the XFRM interface
+# (proto xfrm, package xfrm) and puts the address and routes on it (proto
+# wwandvowifi, which asks sipd).
+# `wwandctl ims setup --apply` writes these too, also after the fact.
+
+config interface 'imswifi0'
+	option proto 'xfrm'
+	option ifid '7001'
+	option mtu '1280'
+
+config interface 'wwvowifi'
+	option proto 'wwandvowifi'
+	option device '@imswifi0'
+	option ip4table '31'
+	option ip6table '31'
+	option peerdns '0'
+	option delegate '0'
+
 # ---- /etc/config/firewall --------------------------------------------------
 
 config zone 'ims'
@@ -51,8 +71,8 @@ config zone 'ims'
 	option forward 'REJECT'
 	list network 'wwims'
 	list device 'ims'
-	list device 'imswifi'           # VoWiFi (wwand-ims-vowifi): the tunnel's
-	list device 'imswifi0'          #   VRF and XFRM interface
+	list network 'imswifi0'         # VoWiFi (wwand-ims-vowifi): the XFRM
+	list network 'wwvowifi'         #   interface and its addresses
 
 config rule 'ims_esp'
 	option name 'IMS-ESP'

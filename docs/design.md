@@ -268,9 +268,22 @@ Open for a router:
   eap-aka with fips-prf, p-cscf, and the new ext-aka card plugin) is driven
   over vici only: `vowifi/ctl.uc` loads the connection (NAI
   `0<IMSI>@nai.epc…`, no IDr, virtual IPs, if_id 7001), initiates it, takes
-  the P-CSCFs from charon's log and the inner address from list-sas, and
-  puts it on the XFRM interface `imswifi0` in VRF `imswifi` (table 31, a rule
-  from the inner address). EAP-AKA runs on the modem's USIM: ext-aka execs
+  the P-CSCFs from charon's log and the inner address from list-sas,
+  and renews the netifd interface `wwvowifi` (proto `wwandvowifi`,
+  files/vowifi-proto.sh, on `@imswifi0`): netifd asks sipd (`vowifi_addr`)
+  and puts the address and the default route into table 31, with its
+  `from`/`to` rules for the inner address. The XFRM interface `imswifi0` is
+  netifd's own OpenWrt `proto xfrm` (`ifid 7001`, `mtu 1280`): the daemon
+  touches no address, route or link (wwand's invariant), only charon's own
+  copy of the virtual IP on the LAN bridge goes. No VRF, unlike the IMS
+  PDN: netifd 2026.02.26 (OpenWrt 25.12) sets `disable_ipv6` on every VRF
+  port that has no `ipv6` setting of its own (vrf.c "Disable IPv6 for vrf
+  ports", removed by 2026.07), and a proto xfrm device cannot carry one —
+  the IPv6-only tunnel was dead that way (HW 2026-11-21). The UE's and the
+  relay's sockets bind to `imswifi0` and the inner address instead; the
+  table and the rules keep the traffic in the tunnel.
+  `wwandctl ims setup` writes these sections, and run again later it adds
+  what is missing (list entries without --force). EAP-AKA runs on the modem's USIM: ext-aka execs
   `/usr/libexec/strongswan/ext-aka`, `vowifi/card.uc` does the AUTHENTICATE
   over wwand's APDU channel. What Telekom's ePDG does: IKE_SA_INIT asks for
   MODP_4096 (AES-CBC-256/HMAC-SHA2-512/PRF-SHA2-512 chosen), NAT-T, the
@@ -279,18 +292,29 @@ Open for a router:
   (EAP-only), then one IPv6 address and two IPv6 P-CSCFs. What it took:
   - an IDr `ims` makes charon insist on that identity back: no IDr;
   - `remote.auth = eap-aka` (EAP-only), `pubkey` fails the constraint;
-  - charon settings vici cannot carry, shipped as files by the package:
-    `p-cscf.enable.wwand-vowifi` (else no P-CSCF request) and
-    `install_virtual_ip = no`, `install_routes = no` (else the address a
-    second time on br-lan);
+  - one charon setting vici cannot carry, shipped as a file by the package:
+    `p-cscf.enable.wwand-vowifi` (else no P-CSCF request). charon installs
+    the virtual IP a second time where its outer route points (br-lan);
+    the controller flushes that copy before it puts the address on the
+    XFRM interface, so charon's global settings stay untouched for its
+    other connections (with if_id, charon adds no routes to table 220);
   - the tunnel's VRF and XFRM interface in the IMS firewall zone: the reply
     to the protected REGISTER comes to the UE's server port, not as a
     conntrack reply, and fw4 rejected it (ICMP port unreachable carrying
     the decrypted 200 OK);
   - the UE's sockets bound to no device (udp_l3mdev_accept); the sec-agree
     SAs inside the tunnel need no if_id.
-  Open: calls over VoWiFi (RTP through the tunnel, preconditions without a
-  dedicated bearer), the P-ANI value (`IEEE-802.11` is sent), handover.
+  Kept up by `vowifi/ctl.uc`: an IKE or CHILD SA down (vici ike-updown /
+  child-updown), charon itself gone (the vici connection closes; a new
+  charon has none of our connection) or a start that fails all lead to a
+  new load-conn + initiate, after 5 s backing off to 60 s, never giving up.
+  charon's log for our connection goes to syslog through vici (level 0/1
+  of IKE/CFG/CHD/KNL as info, failures as warn); the card program logs
+  there too (ident wwand-ims-vowifi). The ePDG's wants are profile options
+  (`vowifi_epdg`, `vowifi_apn`, `vowifi_proposals`, `vowifi_esp_proposals`,
+  `vowifi_remote_auth`, `vowifi_pani`), ims_modem's override.
+  An incoming call rang the LAN phone and talked through the tunnel
+  (2026-11-21). Open: the P-ANI value (`IEEE-802.11` is sent), handover.
 - **GDSP:** the Vodafone product description lists VoWiFi with a separate
   setup; not tested.
 

@@ -161,3 +161,95 @@ export function ue_opts(p)
 
 	return u;
 }
+
+// ---- a profile from what is in use now ------------------------------------------------
+//
+// snapshot(src) -> { name, options }: a new `config ims_profile` from the
+// modem's carrier configuration and what the network gave the UE, for
+// LuCI's "clone from current settings". src (sipd's profile_snapshot):
+//   { imsi, plmn: { mcc, mnc, mnc_digits, description }, mbn (active
+//     carrier config name), ims_apn: { apn, pdp_type } (the IMCN profile),
+//     selection: { voice_domain, usage } (NAS), ue: line.status(),
+//     prof: line.profile(), smsc, date }
+// What is not known is left out, so the built-in default stays.
+
+const EALG_OPTION = { 'null': 'null', 'aes-cbc': 'aes', 'des-ede3-cbc': '3des' };
+// libqmi 1.38 QmiNasVoiceDomainPreference / QmiNasUsagePreference
+const VOICE_DOMAIN = { '0': 'cs_only', '1': 'ps_only', '2': 'cs_preferred', '3': 'ps_preferred' };
+const USAGE = { '1': 'voice_centric', '2': 'data_centric' };
+// libqmi 1.38 QmiWdsPdpType (modem_profiles)
+const PDP = { '0': 'ipv4', '2': 'ipv6', '3': 'ipv4v6' };
+
+function enum_of(table, v)
+{
+	return (v != null) ? table[sprintf('%d', +v)] : null;
+}
+
+export function snapshot(src)
+{
+	let o = {};
+	let p = src?.plmn;
+	let mnc = (p?.mnc != null) ? sprintf('%d', +p.mnc) : null;
+	while (mnc != null && length(mnc) < (p.mnc_digits ?? 2))
+		mnc = '0' + mnc;
+	let plmn = (p?.mcc != null && mnc) ? sprintf('%03d%s', +p.mcc, mnc) : substr(src?.imsi ?? '', 0, 5);
+	let who = p?.description ?? (length(plmn) ? plmn : 'operator');
+
+	o.label = sprintf('%s (from the modem and the network%s)', who, src?.date ? ', ' + src.date : '');
+	if (length(plmn ?? ''))
+		o.match_imsi = [ plmn ];
+
+	// the carrier configuration
+	if (src?.mbn)
+		o.mbn = src.mbn;
+	if (src?.ims_apn?.apn)
+		o.ims_apn = src.ims_apn.apn;
+	let pdp = enum_of(PDP, src?.ims_apn?.pdp_type);
+	if (pdp)
+		o.ims_pdp_type = pdp;
+	let vd = enum_of(VOICE_DOMAIN, src?.selection?.voice_domain);
+	if (vd)
+		o.voice_domain = vd;
+	let us = enum_of(USAGE, src?.selection?.usage);
+	if (us)
+		o.usage = us;
+
+	// what the network gave the UE
+	let ue = src?.ue, prof = src?.prof ?? {};
+	let dom = match(ue?.impu ?? '', /@([^;>]+)/);
+	if (dom)
+		o.domain = dom[1];
+	if (ue?.sec?.alg)
+		o.ipsec_integrity = ue.sec.alg;
+	if (ue?.sec?.ealg && EALG_OPTION[ue.sec.ealg])
+		o.ipsec_encryption = [ EALG_OPTION[ue.sec.ealg] ];
+	if (ue?.expires)
+		o.reg_expires = sprintf('%d', +ue.expires);
+	if (ue?.reg_event)
+		o.reg_event = (ue.reg_event == 'active') ? '1' : '0';
+	o.auth = 'akav1-md5';
+
+	// the UE's own values in use (the profile it runs on, else its defaults)
+	o.sip_t1_ms = sprintf('%d', prof.t1 ?? 500);
+	o.sip_t2_s = sprintf('%d', int((prof.t2 ?? 4000) / 1000));
+	o.sip_transport = (prof.tcp === false) ? 'udp' : 'udp,tcp';
+	if (prof.user_agent)
+		o.user_agent = prof.user_agent;
+	if (prof.pcscf_port)
+		o.pcscf_port = sprintf('%d', prof.pcscf_port);
+	if (prof.alert_delay != null)
+		o.alert_delay_ms = sprintf('%d', prof.alert_delay);
+	if (prof.rtp_timeout != null)
+		o.rtp_timeout_s = sprintf('%d', prof.rtp_timeout);
+	if (src?.smsc)
+		o.sms_smsc = src.smsc;
+	if (prof.sms_psi)
+		o.sms_psi = prof.sms_psi;
+
+	// a uci section name: letters, digits, underscore
+	let name = lc(replace(who, /[^A-Za-z0-9]+/g, '_'));
+	name = replace(replace(name, /^_+/, ''), /_+$/, '');
+	if (!length(name) || match(name, /^[0-9]/))
+		name = 'op_' + name;
+	return { name: name, options: o };
+}

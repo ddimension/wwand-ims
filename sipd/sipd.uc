@@ -211,10 +211,30 @@ if (backend == 'ue' && access == 'vowifi') {
 		log('warn', sprintf('sipd: vowifi: modem %s has no IMSI yet', modem ?? im.modem ?? '?'));
 		exit(1);
 	}
-	vowifi = CTL.create({ vici: VICI.create({ socket: socket, uloop: uloop, log: log }), uloop: uloop, log: log,
-		run: (argv) => system(argv), imsi: m.imsi, mnc_len: im.mnc_len ? +im.mnc_len : LINE.home_mnc_len(m),
-		if_id: +(im.vowifi_if_id ?? 7001), dev: im.vowifi_dev ?? 'imswifi0', vrf: im.vowifi_vrf ?? 'imswifi',
-		table: +(im.vowifi_table ?? 31), epdg: im.epdg, apn: im.vowifi_apn });
+	// what the operator's ePDG wants: the SIM's ims_profile (vowifi_*), and
+	// ims_modem's own option over it
+	let p = PROFILE.select(profiles, im.profile, { imsi: m.imsi, iccid: m.iccid }) ?? {};
+	let opt = (name) => im[name] ?? p[name];
+	let lst = (name) => length(PROFILE.list_of(opt(name))) ? PROFILE.list_of(opt(name)) : null;
+	// charon restarted or crashed: the controller loads the tunnel again
+	let vici = VICI.create({ socket: socket, uloop: uloop, log: log, on_close: (why) => vowifi?.vici_closed(why) });
+	// the netifd interface (proto wwandvowifi) that takes the tunnel's IP
+	// configuration: renew it whenever the tunnel comes up
+	let vw_iface = im.vowifi_iface ?? 'wwvowifi';
+	vowifi = CTL.create({ vici: vici, uloop: uloop, log: log,
+		run: (argv) => system(argv),
+		// deferred: the proto handler asks sipd (vowifi_addr) back right away
+		notify: () => bus.defer(sprintf('network.interface.%s', vw_iface), 'renew', {},
+			(rc) => rc ? log('warn', sprintf('vowifi: netifd renew %s: %s', vw_iface, ubus.error() ?? rc)) : null),
+		imsi: m.imsi, mnc_len: im.mnc_len ? +im.mnc_len : LINE.home_mnc_len(m),
+		if_id: +(im.vowifi_if_id ?? 7001), dev: im.vowifi_dev ?? 'imswifi0',
+		epdg: im.epdg ?? p.vowifi_epdg, apn: opt('vowifi_apn'),
+		proposals: lst('vowifi_proposals'), esp_proposals: lst('vowifi_esp_proposals'),
+		remote_auth: opt('vowifi_remote_auth'), pani: opt('vowifi_pani') });
+	// the UE registers once netifd has the tunnel's address and route
+	// (its ifup / ifupdate of the interface), not at its next retry and not
+	// before: an earlier REGISTER finds no route ("Network unreachable")
+	vowifi.iface = vw_iface;
 }
 
 if (backend == 'ue') {
@@ -267,7 +287,7 @@ let ims = (op, args, cb) => {
 
 core = CORE.create({
 	cfg: { ip: listen_ip, port: port, realm: gw.realm ?? 'wwand-ims', modem: modem,
-	       codecs: codecs, users: users },
+	       codecs: codecs, users: users, redirect_info: gw.redirect_info != '0' },
 	send: send,
 	ims: ims,
 	media: media,
@@ -323,6 +343,47 @@ let ubus_obj = bus.publish('wwand-ims', {
 		args: { ubus_rpc_session: '' },
 		call: (req) => ({ now: time(), calls: core.history() }),
 	},
+	// the VoWiFi tunnel's IP configuration, for its netifd proto handler
+	// (files/vowifi-proto.sh, proto wwandvowifi): up, the inner addresses
+	vowifi_addr: {
+		args: { ubus_rpc_session: '' },
+		call: (req) => {
+			let a = vowifi?.access();
+			return a ? { up: 1, v4: a.v4, v6: a.v6, dev: vowifi.status().dev } : { up: 0 };
+		},
+	},
+
+	// a new operator profile from what is in use now (LuCI: "clone from
+	// current settings"): the modem's carrier configuration and what the
+	// network gave the UE, as `config ims_profile` options (sipd/profile.uc
+	// snapshot). Nothing is written: the caller saves it under a name.
+	profile_snapshot: {
+		args: { ubus_rpc_session: '' },
+		call: (req) => {
+			let st = bus.call('wwand', 'status', {}) ?? {};
+			let m = st.modems?.[modem] ?? {};
+			let ims_apn = null;
+			for (let p in bus.call('wwand', 'modem_profiles', { modem: modem })?.profiles ?? [])
+				if (!match(lc(p.apn ?? ''), /^sos/) && (p.imcn == 1 || (!ims_apn && match(lc(p.apn ?? ''), /^ims/))))
+					ims_apn = p;
+			let mbn = null;
+			let cc = bus.call('wwand', 'modem_carrier_config', { modem: modem, op: 'get' });
+			if (cc?.active)
+				for (let c in bus.call('wwand', 'modem_carrier_config', { modem: modem, op: 'list' })?.configs ?? [])
+					if (c.id == cc.active)
+						mbn = c.description ?? c.name;
+			let diag = bus.call('wwand', 'modem_plugin', { modem: modem, plugin: 'ims', op: 'diag', args: {} });
+			let csca = bus.call('wwand', 'modem_at', { modem: modem, command: 'AT+CSCA?', timeout: 3000 });
+			let lt = localtime();
+			let snap = PROFILE.snapshot({ imsi: m.imsi, plmn: m.registration?.plmn, mbn: mbn, ims_apn: ims_apn,
+				selection: diag?.selection, ue: line?.status(), prof: line?.profile(),
+				smsc: LINE.smsc_from_csca(csca?.response),
+				date: sprintf('%04d-%02d-%02d', lt.year, lt.mon, lt.mday) });
+			return { ok: true, ...snap, sources: { mbn: mbn != null, ims_profile: ims_apn != null,
+				selection: diag?.selection != null, registered: line?.status()?.state == 'registered' } };
+		},
+	},
+
 	// an SMS over IMS: wwand's modem_sms_send hands it here (the ims plugin's
 	// sms_send hook) while option smsip is on; the reply is wwand's shape
 	sms_send: {
@@ -353,9 +414,15 @@ let emit_ue_status = (state) => {
 if (line) {
 	let ue_tick;
 	ue_tick = () => { emit_ue_status(); uloop.timer(5000, ue_tick); };
-	// over VoWiFi the tunnel first; the line retries until it is up
-	if (vowifi)
-		vowifi.start((err) => err ? log('warn', sprintf('sipd: vowifi: %J', err)) : line.retry_now());
+	// over VoWiFi the tunnel first: the controller keeps it up from here
+	// on, the line registers when netifd has its address (or retries)
+	if (vowifi) {
+		vowifi.start(null);
+		bus.listener('network.interface', (type, data) => {
+			if (data?.interface == vowifi.iface && (data?.action == 'ifup' || data?.action == 'ifupdate') && vowifi.access())
+				line?.retry_now();
+		});
+	}
 	line.start();
 	ue_tick();
 }

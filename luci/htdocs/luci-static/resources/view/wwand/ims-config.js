@@ -3,6 +3,7 @@
 'require form';
 'require rpc';
 'require uci';
+'require ui';
 'require tools.widgets as widgets';
 
 /* VoLTE settings (wwand-ims): /etc/config/wwand_ims — the SIP side
@@ -13,6 +14,58 @@
    values of a profile are `wwandctl ims` matters and stay as they are. */
 
 var callStatus = rpc.declare({ object: 'wwand', method: 'status', expect: { modems: {} } });
+var callSnapshot = rpc.declare({ object: 'wwand-ims', method: 'profile_snapshot', expect: { '': {} } });
+
+/* "Clone current settings": sipd builds a profile from the modem's carrier
+   configuration and what the network gave the router's UE (sipd/profile.uc
+   snapshot); asked for a name, it goes into the staged uci changes like a
+   section added by hand, and is saved with Save & Apply */
+function clone_current(map) {
+	return callSnapshot().then(function(res) {
+		if (!res || res.ok === false || !res.options) {
+			ui.addNotification(null, E('p', {}, [ _('No profile from the current settings: %s').format(
+				(res && res.error) || _('sipd does not answer (is it running?)')) ]), 'warning');
+			return;
+		}
+
+		var input = E('input', { 'class': 'cbi-input-text', 'value': res.name || 'operator' });
+		var note = [];
+		if (res.sources && !res.sources.registered)
+			note.push(_('The UE is not registered: the network\'s values are missing.'));
+		if (res.sources && !res.sources.mbn)
+			note.push(_('The modem names no carrier configuration (MBN).'));
+
+		ui.showModal(_('New operator profile from the current settings'), [
+			E('p', {}, _('From the modem\'s carrier configuration (MBN, IMS APN, voice domain) and what the network gave the router\'s UE (registration expiry, IPsec algorithms, domain, SMS centre).')),
+			E('p', {}, [ E('em', {}, note.join(' ')) ]),
+			E('div', { 'class': 'cbi-value' }, [
+				E('label', { 'class': 'cbi-value-title' }, _('Profile name')),
+				E('div', { 'class': 'cbi-value-field' }, input),
+			]),
+			E('div', { 'class': 'right' }, [
+				E('button', { 'class': 'btn', 'click': ui.hideModal }, _('Cancel')), ' ',
+				E('button', { 'class': 'btn cbi-button-positive', 'click': ui.createHandlerFn(this, function() {
+					var name = input.value.trim();
+					if (!/^[a-z0-9_]{1,40}$/.test(name)) {
+						ui.addNotification(null, E('p', {}, _('A profile name has lower-case letters, digits and _ only.')), 'warning');
+						return;
+					}
+					if (uci.get('wwand_ims', name)) {
+						ui.addNotification(null, E('p', {}, [ _('There is a section named %s already.').format(name) ]), 'warning');
+						return;
+					}
+					uci.add('wwand_ims', 'ims_profile', name);
+					for (var k in res.options)
+						uci.set('wwand_ims', name, k, res.options[k]);
+					ui.hideModal();
+					return map.save(null, true).then(function() {
+						ui.addNotification(null, E('p', {}, [ _('Profile %s added from the current settings; Save & Apply keeps it.').format(name) ]), 'info');
+					});
+				}) }, _('Create')),
+			]),
+		]);
+	});
+}
 
 /* ms / s / count: an empty field means "the default" */
 function numeric(o, min) {
@@ -77,6 +130,11 @@ return view.extend({
 			_('Where the last ten calls are kept. The default is in RAM and gone after a reboot; a file on flash costs one write per call.'));
 		o.placeholder = '/var/run/wwand-ims-sipd.calls';
 		o.rmempty = true;
+
+		o = s.option(form.Flag, 'redirect_info', _('Forwarding information'),
+			_('A forwarded call (e.g. a landline diverted to this number): the network\'s History-Info is passed on, with Diversion headers made from it (who forwarded, why). The network itself leaves out what may not be shown.'));
+		o.default = '1';
+		o.rmempty = false;
 
 		o = s.option(form.Value, 'sip_trace', _('SIP trace file'),
 			_('For debugging only: every SIP message of both sides is written there in full, identities and keys included. Leave empty in normal operation.'));
@@ -187,12 +245,27 @@ return view.extend({
 		s.addremove = true;
 		s.anonymous = false;
 		s.nodescriptions = true;
+		/* next to "Add": a new profile cloned from what is in use now */
+		s.renderSectionAdd = function(extra_class) {
+			var el = form.TypedSection.prototype.renderSectionAdd.apply(this, [ extra_class ]);
+			el.appendChild(E('button', {
+				'class': 'cbi-button cbi-button-add',
+				'title': _('A new profile from the modem\'s carrier configuration and the network\'s values'),
+				'click': ui.createHandlerFn(this, function(ev) {
+					ev.preventDefault();
+					return clone_current(m);
+				}),
+			}, [ _('Clone current settings') ]));
+			return el;
+		};
 
 		s.tab('match', _('Match'));
+		s.tab('carrier', _('Carrier'));
 		s.tab('sip', _('SIP'));
 		s.tab('security', _('Security'));
 		s.tab('media', _('Calls'));
 		s.tab('sms', _('SMS'));
+		s.tab('vowifi', _('VoWiFi'));
 
 		o = s.taboption('match', form.Value, 'label', _('Label'));
 		o.rmempty = true;
@@ -200,6 +273,35 @@ return view.extend({
 		o.datatype = 'and(uinteger,maxlength(15))';
 		o = s.taboption('match', form.DynamicList, 'match_iccid', _('ICCID prefixes'));
 		o.datatype = 'and(uinteger,maxlength(20))';
+
+		/* the modem's side of a profile (wwandctl ims check/fix/mbn act on it) */
+		o = s.taboption('carrier', form.Value, 'mbn', _('Carrier configuration (MBN)'),
+			_('auto: the modem chooses; a name: that one is selected.'));
+		o.rmempty = true;
+		o = s.taboption('carrier', form.Value, 'ims_apn', _('IMS APN'));
+		o.rmempty = true;
+		o = s.taboption('carrier', form.ListValue, 'ims_pdp_type', _('IMS PDP type'));
+		o.value('', _('default'));
+		o.value('ipv4', 'IPv4');
+		o.value('ipv6', 'IPv6');
+		o.value('ipv4v6', 'IPv4v6');
+		o.rmempty = true;
+		o = s.taboption('carrier', form.ListValue, 'voice_domain', _('Voice domain'));
+		o.value('', _('default'));
+		o.value('cs_only', _('CS only'));
+		o.value('ps_only', _('PS only'));
+		o.value('cs_preferred', _('CS preferred'));
+		o.value('ps_preferred', _('PS preferred'));
+		o.rmempty = true;
+		o = s.taboption('carrier', form.ListValue, 'usage', _('UE usage'));
+		o.value('', _('default'));
+		o.value('voice_centric', _('voice centric'));
+		o.value('data_centric', _('data centric'));
+		o.rmempty = true;
+		o = s.taboption('carrier', form.Value, 'domain', _('Home domain'),
+			_('Default: ims.mnc<MNC>.mcc<MCC>.3gppnetwork.org from the IMSI.'));
+		o.datatype = 'hostname';
+		o.rmempty = true;
 
 		o = numeric(s.taboption('sip', form.Value, 'sip_t1_ms', _('SIP T1 (ms)')), 100);
 		o.placeholder = '500';
@@ -245,6 +347,28 @@ return view.extend({
 		o = s.taboption('sms', form.Value, 'sms_psi', _('SMS centre URI'),
 			_('Where outgoing SMS are sent, %s for the centre\'s number. Default: tel:<number>.'));
 		o.placeholder = 'sip:%s@ims.example.net;user=phone';
+		o.rmempty = true;
+
+		/* what the operator's ePDG wants (ims_modem option access 'vowifi');
+		   an empty field keeps what Telekom DE's took */
+		o = s.taboption('vowifi', form.Value, 'vowifi_epdg', _('ePDG'),
+			_('Default: epdg.epc.mnc<MNC>.mcc<MCC>.pub.3gppnetwork.org from the SIM.'));
+		o.datatype = 'host';
+		o.rmempty = true;
+		o = s.taboption('vowifi', form.Value, 'vowifi_apn', _('APN (IDr)'),
+			_('Sent as the IKE responder identity. Default: none (an ePDG that answers with its own identity would be refused otherwise).'));
+		o.rmempty = true;
+		o = s.taboption('vowifi', form.DynamicList, 'vowifi_proposals', _('IKE proposals'),
+			_('strongSwan notation. Default: aes256-sha512-modp4096, then charon\'s defaults.'));
+		o = s.taboption('vowifi', form.DynamicList, 'vowifi_esp_proposals', _('ESP proposals'),
+			_('Default: charon\'s.'));
+		o = s.taboption('vowifi', form.ListValue, 'vowifi_remote_auth', _('ePDG authentication'));
+		o.value('', _('EAP-AKA only (default)'));
+		o.value('eap-aka', _('EAP-AKA only'));
+		o.value('pubkey', _('certificate'));
+		o.rmempty = true;
+		o = s.taboption('vowifi', form.Value, 'vowifi_pani', _('P-Access-Network-Info'));
+		o.placeholder = 'IEEE-802.11';
 		o.rmempty = true;
 
 		o = numeric(s.taboption('media', form.Value, 'rtp_timeout_s', _('RTP timeout (s)'),

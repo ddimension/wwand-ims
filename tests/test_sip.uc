@@ -95,4 +95,22 @@ ok(S.auth_check(a, 'GET', 'Circle Of Life'), 'auth_check: RFC 2617 3.5 vector');
 ok(!S.auth_check(a, 'GET', 'wrong'), 'auth_check: wrong password refused');
 ok(!S.auth_check(a, 'POST', 'Circle Of Life'), 'auth_check: other method refused');
 
+// ---- History-Info -> Diversion ---------------------------------------------------------
+// two diversions: the landline unconditionally to an office number, that one
+// busy to the mobile (RFC 7044 indexes, RFC 4458 cause); made-up numbers
+let hi = S.history_info([
+	'<sip:+495215550100@ims.example.net;user=phone?Privacy=none>;index=1, <sip:+495215550200@ims.example.net;user=phone;cause=302>;index=1.1;mp=1',
+	'<tel:+4915550000001;cause=486>;index=1.1.1;mp=1.1' ]);
+eq(map(hi, (e) => [ e.user, e.index, e.cause ]), [ [ '+495215550100', '1', null ], [ '+495215550200', '1.1', '302' ],
+	[ '+4915550000001', '1.1.1', '486' ] ], 'history_info: entries over several headers, user, index, cause');
+let dv = S.diversions(hi);
+eq(dv, [ { user: '+495215550200', reason: 'user-busy', cause: '486' }, { user: '+495215550100', reason: 'unconditional', cause: '302' } ],
+	'diversions: the latest first, the diverting user is the parent entry');
+eq(S.diversion_headers(dv, '192.0.2.1'), [ '<sip:+495215550200@192.0.2.1>;reason=user-busy;counter=1',
+	'<sip:+495215550100@192.0.2.1>;reason=unconditional;counter=1' ], 'diversion_headers');
+eq(S.diversions(S.history_info([ '<sip:+495215550100@ims.example.net>;index=1' ])), [], 'diversions: none without a cause');
+eq(S.diversions(S.history_info([ '<sip:+4915550000001@x;cause=408>' ])), [], 'diversions: no diverting entry, none');
+eq(S.diversions(S.history_info([ '<sip:+495215550100@x>, <sip:+4915550000001@x;cause=480>' ]))[0],
+	{ user: '+495215550100', reason: 'deflection', cause: '480' }, 'diversions: without indexes the entry before');
+
 done();

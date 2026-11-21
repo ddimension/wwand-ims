@@ -52,9 +52,9 @@ eq(fmt.ue_rows({ ue: { state: 'registered', impu: 'sip:+4915550000001@ims.exampl
 eq(fmt.ue_rows({ ue: null }), [], 'ue_rows: backend qmi has none');
 
 eq(fmt.vowifi_rows({ vowifi: { state: 'up', epdg: 'epdg.example.net', v6: '2001:db8:aa::2', v4: null,
-                                pcscf: [ '2001:db8:ff::10', '2001:db8:ff::11' ], dev: 'imswifi0', vrf: 'imswifi' } }), [
+                                pcscf: [ '2001:db8:ff::10', '2001:db8:ff::11' ], dev: 'imswifi0' } }), [
 	[ 'Tunnel', 'up' ], [ 'ePDG', 'epdg.example.net' ], [ 'Inner address', '2001:db8:aa::2' ],
-	[ 'P-CSCF', '2001:db8:ff::10, 2001:db8:ff::11' ], [ 'Interface', 'imswifi0 (VRF imswifi)' ] ], 'vowifi_rows: up');
+	[ 'P-CSCF', '2001:db8:ff::10, 2001:db8:ff::11' ], [ 'Interface', 'imswifi0' ] ], 'vowifi_rows: up');
 eq(fmt.vowifi_rows({ vowifi: { state: 'down', error: 'establishing CHILD_SA failed', dev: 'imswifi0', vrf: 'imswifi' } }).pop(),
 	[ 'Last error', 'establishing CHILD_SA failed' ], 'vowifi_rows: down with its error');
 eq(fmt.vowifi_rows({ vowifi: null }), [], 'vowifi_rows: none over the IMS PDN');

@@ -712,7 +712,7 @@ export function create(o)
 		let env = discover(true);
 		// the P-CSCF in use no longer among the PDN's counts as a change
 		if (env.error || env.ue_addr != cur.env.ue_addr || index(env.pcscfs, cur.env.pcscf) < 0) {
-			log('warn', sprintf('ue: the IMS PDN changed (%s); registering again',
+			log('warn', sprintf('ue: the IMS %s changed (%s); registering again', o.access ? 'access (VoWiFi)' : 'PDN',
 				env.error ?? sprintf('%s via %s', env.ue_addr, env.pcscf)));
 			let old = cur;
 			cur = null;
@@ -772,8 +772,11 @@ export function create(o)
 		}
 		let media = o.relay?.alloc();
 		let c = new_call(media?.ims_port ?? 40000);
+		// a diverted call: what the network says about it, for the LAN side
+		let hvals = (name) => map(filter(inv.headers ?? [], (x) => x[0] == name), (x) => x[1]);
 		let inc = { call: c, media: media, number: caller_of(inv),
-		            called: SIP_user(inv, 'p-called-party-id') ?? SIP_user(inv, 'to'), handler: null, queue: [] };
+		            called: SIP_user(inv, 'p-called-party-id') ?? SIP_user(inv, 'to'),
+		            history: hvals('history-info'), diversion: hvals('diversion'), handler: null, queue: [] };
 		inc.set = (ev) => {
 			inc.handler = ev;
 			for (let x in inc.queue)
@@ -831,7 +834,7 @@ export function create(o)
 	self.status = () => ({
 		state: self.state, ue_addr: cur?.env?.ue_addr, pcscf: cur?.env?.pcscf, impu: impu(),
 		expires: cur?.res?.expires, ports: cur?.pair, calls: length(keys(calls)),
-		profile: prof.name, reg_event: cur?.sub?.state, smsip: !!o.smsip,
+		profile: prof.name, reg_event: cur?.sub?.state, smsip: !!o.smsip, sec: cur?.res?.sec,
 	});
 
 	self.profile = () => prof;

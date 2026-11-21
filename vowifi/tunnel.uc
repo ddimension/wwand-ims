@@ -21,7 +21,8 @@
 // Telekom DE (HW, 2026-11-21): MODP_4096 for the key exchange, IDr and an
 // EAP-AKA request in the first IKE_AUTH answer, no certificate (EAP-only,
 // RFC 5998). The P-CSCF request needs charon.plugins.p-cscf.enable.<CONN>,
-// a setting vici cannot carry: files/vowifi-strongswan.conf.
+// a setting vici cannot carry: files/vowifi-strongswan.conf (it names our
+// connection only; charon's global settings stay untouched).
 
 'use strict';
 

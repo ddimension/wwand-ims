@@ -18,7 +18,9 @@
 //
 //   VICI.encode(obj) -> bytes            VICI.decode(bytes) -> obj | null
 //   VICI.packet(type, name, obj) -> the framed bytes
-//   let c = VICI.create({ socket, uloop, path, log })
+//   let c = VICI.create({ socket, uloop, path, log, on_close })
+//     on_close(why): charon closed the connection (restarted, crashed); the
+//     next request connects again and registers the listeners anew
 //   c.request(cmd, msg, cb(err, res))    one at a time, queued
 //   c.stream(cmd, msg, event, on_item, cb)   a command that answers with
 //                                       events first (list-sas: 'list-sa')
@@ -182,6 +184,7 @@ export function create(o)
 	};
 
 	let drop = (why) => {
+		let had = (sock != null);
 		handle?.delete();
 		handle = null;
 		sock?.close();
@@ -190,6 +193,9 @@ export function create(o)
 		if (why)
 			log('warn', sprintf('vici: %s', why));
 		fail_all({ error: 'vici', detail: why ?? 'closed' });
+		// charon went away under us (not our own close): tell the owner
+		if (had && why && !self.closed)
+			o.on_close?.(why);
 	};
 
 	let next, on_packet;
@@ -229,9 +235,10 @@ export function create(o)
 					log('warn', 'vici: a packet that does not parse');
 			}
 		}, uloop.ULOOP_READ);
-		// the events asked for before the connection was (re)opened
-		for (let ev in keys(listeners))
-			push(queue, { kind: 'register', name: ev, cb: null });
+		// the events asked for before the connection was (re)opened: first,
+		// ahead of what waits, so no event of a new charon goes unheard
+		let regs = map(keys(listeners), (ev) => ({ kind: 'register', name: ev, cb: null }));
+		queue = [ ...regs, ...queue ];
 		return true;
 	};
 
@@ -301,10 +308,14 @@ export function create(o)
 		let first = !listeners[event];
 		listeners[event] ??= [];
 		push(listeners[event], fn);
-		if (first) {
+		// registered now on an open connection; a closed one registers all
+		// listeners when it opens (open())
+		if (first && sock) {
 			push(queue, { kind: 'register', name: event, cb: null });
 			next();
 		}
+		else if (first && open())
+			next();
 	};
 
 	self.close = function() {

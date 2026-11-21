@@ -108,11 +108,23 @@ w.say(VICI.packet(VICI.T.EVENT_CONFIRM, null, null),
 	VICI.packet(VICI.T.EVENT, 'log', { group: 'CFG', msg: 'received P-CSCF server IP 2001:db8::5' }));
 eq(logs, [ 'received P-CSCF server IP 2001:db8::5' ], 'listen: the event reaches it');
 
-// charon goes away: what waits fails
-let lost = null;
+// charon goes away: what waits fails, the owner hears of it
+let lost = null, closed = null;
+w = charon();
+c = VICI.create({ socket: w.socket, uloop: w.uloop, on_close: (why) => { closed = why; } });
+c.listen('log', (m) => null);
+w.say(VICI.packet(VICI.T.EVENT_CONFIRM, null, null));
 c.request('version', null, (e, r) => { lost = e; });
 w.inbox = '';
 w.handler();
-eq(lost?.error, 'vici', 'client: charon gone -> the waiting command fails');
+eq([ lost?.error, closed ], [ 'vici', 'charon closed the connection' ], 'client: charon gone -> the waiting command fails, on_close');
+// the next request connects again and registers the listener anew
+w.sent = [];
+c.request('version', null, (e, r) => null);
+eq([ w.sent[0]?.type, w.sent[0]?.name ], [ VICI.T.EVENT_REGISTER, 'log' ], 'client: after a reconnect the listeners come first');
+w.say(VICI.packet(VICI.T.EVENT_CONFIRM, null, null));
+eq(w.sent[1]?.name, 'version', 'client: then the request');
+c.close();
+eq(closed, 'charon closed the connection', 'client: our own close is not reported');
 
 done();

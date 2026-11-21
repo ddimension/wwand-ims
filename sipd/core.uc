@@ -441,6 +441,22 @@ function create(env)
 			}
 		});
 
+		// a forwarded call (e.g. a landline diverted to this number): the
+		// network's History-Info as it came, and Diversion headers from it
+		// (or the network's own Diversion), so the phone or PBX sees who
+		// forwarded and why (Asterisk: REDIRECTING(from-num), (reason))
+		let redir = [];
+		if (cfg.redirect_info !== false) {
+			let divs = length(inc.diversion ?? []) ? inc.diversion
+				: S.diversion_headers(S.diversions(S.history_info(inc.history)), cfg.ip);
+			for (let d in divs)
+				push(redir, [ 'Diversion', d ]);
+			for (let h in inc.history ?? [])
+				push(redir, [ 'History-Info', h ]);
+			if (length(divs))
+				log('info', sprintf('sipd: call from %s diverted: %s', caller, join(', ', divs)));
+		}
+
 		let offer = lan_sdp_for(c, lc.answer);
 		c.invite = S.build(sprintf('INVITE %s SIP/2.0', c.target), [
 			[ 'Via', sprintf('SIP/2.0/%s %s;branch=%s;rport', tp(c.addr), me(), c.branch) ],
@@ -450,6 +466,7 @@ function create(env)
 			[ 'Call-ID', c.call_id ],
 			[ 'CSeq', '1 INVITE' ],
 			[ 'Contact', our_contact(c.addr) ],
+			...redir,
 			[ 'Content-Type', 'application/sdp' ],
 		], offer);
 

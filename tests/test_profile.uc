@@ -120,4 +120,25 @@ eq([ LINE.pcscf_pick(L, 0), LINE.pcscf_pick(L, 1), LINE.pcscf_pick(L, 2) ], [ L[
 	'pick: round robin over the PDN\'s list');
 eq(LINE.pcscf_pick([], 3), null, 'pick: an empty list');
 
+// ---- snapshot: a profile from the modem and the network -----------------------------------
+
+let snap = PROFILE.snapshot({ imsi: '262991234567890', plmn: { mcc: 262, mnc: 1, mnc_digits: 2, description: 'Example.net' },
+	mbn: 'Commercial-Example-VoLTE', ims_apn: { apn: 'ims', pdp_type: 3 }, selection: { voice_domain: 3, usage: 1 },
+	ue: { impu: 'sip:+4915550000001@ims.example.net', expires: 7190, reg_event: 'active',
+	      sec: { alg: 'hmac-sha-1-96', ealg: 'aes-cbc' } },
+	prof: { t1: 1000, t2: 8000, alert_delay: 4500, tcp: true }, smsc: '+4917000000', date: '2026-11-21' });
+eq(snap.name, 'example_net', 'snapshot: a section name from the operator');
+eq(snap.options, {
+	label: 'Example.net (from the modem and the network, 2026-11-21)', match_imsi: [ '26201' ],
+	mbn: 'Commercial-Example-VoLTE', ims_apn: 'ims', ims_pdp_type: 'ipv4v6', voice_domain: 'ps_preferred',
+	usage: 'voice_centric', domain: 'ims.example.net', ipsec_integrity: 'hmac-sha-1-96', ipsec_encryption: [ 'aes' ],
+	reg_expires: '7190', reg_event: '1', auth: 'akav1-md5', sip_t1_ms: '1000', sip_t2_s: '8', sip_transport: 'udp,tcp',
+	alert_delay_ms: '4500', sms_smsc: '+4917000000' }, 'snapshot: carrier config, what the network gave, the UE\'s values');
+let back = PROFILE.ue_opts({ '.name': snap.name, ...snap.options });
+eq([ back.t1, back.t2, back.expires, back.algs, back.ealgs, back.warn ],
+	[ 1000, 8000, 7190, [ 'hmac-sha-1-96' ], [ 'aes-cbc' ], [] ], 'snapshot: reads back as the same UE values, no warnings');
+let bare = PROFILE.snapshot({ imsi: '310150123456789' });
+eq([ bare.name, bare.options.match_imsi, bare.options.sip_t1_ms, bare.options.mbn ], [ 'op_31015', [ '31015' ], '500', null ],
+	'snapshot: little known -> the IMSI prefix, the UE defaults');
+
 done();

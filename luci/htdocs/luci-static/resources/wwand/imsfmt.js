@@ -136,7 +136,7 @@ return baseclass.extend({
 			rows.push([ _('Inner address'), [ v.v6, v.v4 ].filter(function(x) { return x; }).join(', ') ]);
 		if (v.pcscf && v.pcscf.length)
 			rows.push([ _('P-CSCF'), v.pcscf.join(', ') ]);
-		rows.push([ _('Interface'), '%s (VRF %s)'.format(v.dev || '?', v.vrf || '?') ]);
+		rows.push([ _('Interface'), v.vrf ? '%s (VRF %s)'.format(v.dev || '?', v.vrf) : (v.dev || '?') ]);
 		if (v.state != 'up' && v.error)
 			rows.push([ _('Last error'), String(v.error) ]);
 		return rows;
