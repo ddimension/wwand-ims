@@ -1,0 +1,31 @@
+{
+	"admin/status/wwand-ims": {
+		"title": "VoLTE",
+		"order": 17,
+		"action": {
+			"type": "view",
+			"path": "wwand/ims-status"
+		},
+		"depends": {
+			"acl": [
+				"luci-app-wwand-ims"
+			]
+		}
+	},
+	"admin/network/wwand-ims": {
+		"title": "VoLTE",
+		"order": 63,
+		"action": {
+			"type": "view",
+			"path": "wwand/ims-config"
+		},
+		"depends": {
+			"acl": [
+				"luci-app-wwand-ims"
+			],
+			"uci": {
+				"wwand_ims": true
+			}
+		}
+	}
+}

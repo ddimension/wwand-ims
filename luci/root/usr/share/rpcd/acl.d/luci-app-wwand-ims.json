@@ -1,0 +1,25 @@
+{
+	"luci-app-wwand-ims": {
+		"description": "Grant access to the wwand-ims VoLTE status and settings",
+		"read": {
+			"ubus": {
+				"wwand-ims": [
+					"status",
+					"calls"
+				],
+				"wwand": [
+					"status"
+				]
+			},
+			"uci": [
+				"wwand_ims",
+				"network"
+			]
+		},
+		"write": {
+			"uci": [
+				"wwand_ims"
+			]
+		}
+	}
+}

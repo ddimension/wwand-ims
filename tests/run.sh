@@ -69,6 +69,14 @@ for t in "$TESTDIR"/test_*.uc; do
 	echo "$(basename "$t" .uc): $(echo "$out" | tail -1 | sed 's/^(null): //')"
 	echo "$out" | grep -q ' 0 failures$' || { echo "$out"; rc=1; }
 done
+# the LuCI page's helpers (luci/), when node is there
+if command -v node >/dev/null 2>&1; then
+	out=$(node "$TESTDIR/../luci/tools/test-imsfmt.js" 2>&1)
+	echo "$out" | tail -1
+	echo "$out" | grep -q ' 0 failures$' || { echo "$out"; rc=1; }
+else
+	echo "test-imsfmt: SKIPPED (no node)"
+fi
 # kernel tests: a user + network namespace of their own, so they need neither
 # root nor touch the host's SAs. Skipped (and said so) where that is not
 # possible: no module built, no unprivileged user namespaces, no xfrm_user.
