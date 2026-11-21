@@ -156,10 +156,20 @@ function create(env)
 		c.retx = env.timer(wait, tick);
 	};
 
+	// incoming calls that ended before the phone's final answer to our
+	// INVITE: that answer (a 487 after our CANCEL) still needs its ACK, or
+	// the phone repeats it for 32 s (RFC 3261 17.2.1, Timer H)
+	let ended_in = {};
+
 	let end_call = (c, why) => {
 		if (!c)
 			return;
 		stop_retx(c);
+		if (c.dir == 'in' && c.state != 'up' && !ended_in[c.call_id]) {
+			let id = c.call_id;
+			ended_in[id] = c;
+			env.timer(32000, () => { delete ended_in[id]; });
+		}
 		if (c.media)
 			env.relay.stop(c.media);
 		else
@@ -556,10 +566,26 @@ function create(env)
 		});
 	};
 
+	// the phone's final answer to the INVITE of a call that is over already
+	let late_final = (c, res) => {
+		c.remote = S.get(res, 'to');
+		if (S.get(res, 'contact'))
+			c.remote_contact = S.uri_of(S.get(res, 'contact'));
+		send(to_phone(c, 'ACK', { cseq: 1, branch: (res.status >= 300) ? c.branch : null }), c.addr);
+		// it answered while our CANCEL was on the way: that dialog ends at once
+		if (res.status < 300 && !c.bye_sent) {
+			c.bye_sent = true;
+			send(to_phone(c, 'BYE'), c.addr);
+		}
+	};
+
 	let on_response = (res, from) => {
 		let c = call;
 		let cs = S.cseq(res);
+		let late = ended_in[S.get(res, 'call-id') ?? ''];
 
+		if (late && late !== c && cs?.method == 'INVITE' && res.status >= 200)
+			return late_final(late, res);
 		if (!c || c.dir != 'in' || S.get(res, 'call-id') != c.call_id || cs?.method != 'INVITE')
 			return;
 

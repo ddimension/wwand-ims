@@ -229,7 +229,19 @@ inv = last();
 core.on_packet(pbx_resp(180), PBX);
 i4.ev('ended', { reason: 'cancelled' });
 eq(last().method, 'CANCEL', 'in: the network cancels -> CANCEL to the PBX');
+let cancel4 = last();
 core.on_packet(pbx_resp(487), PBX);
+eq([ last().method, S.get(last(), 'cseq'), S.get(last(), 'via') == S.get(cancel4, 'via') ], [ 'ACK', '1 ACK', true ],
+	'in: the PBX\'s 487 after the CANCEL is ACKed on the INVITE\'s branch');
+let n4 = length(sent);
+core.on_packet(pbx_resp(487), PBX);
+eq([ length(sent), last().method ], [ n4 + 1, 'ACK' ], 'in: a repeated 487 is ACKed again');
+// the PBX answered while the CANCEL was on its way: ACK and BYE at once
+let i4b = incoming(true);
+inv = last();
+i4b.ev('ended', { reason: 'cancelled' });
+core.on_packet(pbx_resp(200, PBX_ANSWER), PBX);
+eq(map(slice(sent, -2), (x) => x.msg.method), [ 'ACK', 'BYE' ], 'in: a 200 crossing the CANCEL -> ACK, then BYE');
 
 // a second call while one runs: busy
 let i5 = incoming(true);
