@@ -273,7 +273,8 @@ export function create(o)
 	// light: only what the PDN watch compares (address, P-CSCF), no cell
 	let discover = (light) => {
 		let st = bus.call('wwand', 'status', {});
-		let m = st?.modems?.[o.modem];
+		// a card without a modem (ue/reader.uc): its identity from the card
+		let m = o.sim_info ? o.sim_info() : st?.modems?.[o.modem];
 		let fixed = (type(o.pcscf) == 'array') ? o.pcscf : (o.pcscf ? [ o.pcscf ] : []);
 		let v4, v6 = null, pcscf, acc = null;
 
@@ -281,7 +282,7 @@ export function create(o)
 			// VoWiFi (vowifi/ctl.uc): the tunnel's inner addresses and the
 			// P-CSCFs the ePDG named, in the tunnel's VRF; no IMS PDN
 			if (!m?.imsi)
-				return { error: sprintf('modem %s not ready in wwand', o.modem) };
+				return { error: o.sim_info ? 'the card is not read yet' : sprintf('modem %s not ready in wwand', o.modem) };
 			acc = o.access();
 			if (!acc)
 				return { error: 'the VoWiFi tunnel is not up' };
@@ -327,7 +328,7 @@ export function create(o)
 				pani = REG.pani_eutran(+mm[2], +mm[3], length(mm[3]) == 3 ? 3 : 2, hex(mm[5]), hex(mm[4]), mm[1] == 'TDD');
 		}
 
-		return { imsi: m.imsi, imei: m.imei, mnc_len: o.mnc_len ?? home_mnc_len(m),
+		return { imsi: m.imsi, imei: m.imei, instance: m.instance, mnc_len: o.mnc_len ?? m.mnc_len ?? home_mnc_len(m),
 		         fam: fam, ue_addr: ue, pcscf: p, pcscfs: cand, pani: pani, prof: profile_of(m),
 		         vrf: acc ? acc.bind : o.vrf, vowifi: !!acc };
 	};
@@ -430,8 +431,9 @@ export function create(o)
 		r.reg = REG.create({
 			imsi: env.imsi, mnc_len: env.mnc_len, imei: env.imei,
 			ue_addr: env.ue_addr, pcscf_addr: env.pcscf, port_c: pair[0], port_s: pair[1],
-			pani: env.pani, card: AKA.wwand_card(ubus_call, o.modem, o.slot), xfrm: o.xfrm,
-			smsip: !!o.smsip, sa_opts: env.vrf ? {} : null, reqid: 0x1500 + 0x10 * pair_ix,
+			pani: env.pani, card: o.card ?? AKA.wwand_card(ubus_call, o.modem, o.slot), xfrm: o.xfrm,
+			instance: env.instance,
+			smsip: !!o.smsip, sa_opts: env.vrf ? {} : null, reqid: (o.reqid_base ?? 0x1500) + 0x10 * pair_ix,
 			t1: env.prof?.t1, t2: env.prof?.t2, expires: env.prof?.expires,
 			algs: env.prof?.algs, ealgs: env.prof?.ealgs,
 			user_agent: env.prof?.user_agent, pcscf_port: env.prof?.pcscf_port,

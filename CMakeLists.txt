@@ -50,8 +50,10 @@ set(IMS_UCODE_MODULES
   ue/smsip.uc=wwand-ims/ue_smsip.uc
   ue/secagree.uc=wwand-ims/ue_secagree.uc
   ue/kcrypto.uc=wwand-ims/ue_kcrypto.uc
+  ue/reader.uc=wwand-ims/ue_reader.uc
   sipd/line_ue.uc=wwand-ims/sipd_line_ue.uc
   sipd/profile.uc=wwand-ims/sipd_profile.uc
+  sipd/lines.uc=wwand-ims/sipd_lines.uc
   sipd/relay.uc=wwand-ims/sipd_relay.uc
   vowifi/vici.uc=wwand-ims-vowifi/vowifi_vici.uc
   vowifi/card.uc=wwand-ims-vowifi/vowifi_card.uc

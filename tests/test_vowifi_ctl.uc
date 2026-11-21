@@ -65,7 +65,7 @@ function world(answers)
 	w.ctl = CTL.create({ vici: w.vici, uloop: w.uloop, run: (c) => { push(w.cmds, c); return 0; },
 		notify: () => { w.notified++; },
 		log: (l, m) => push(w.logs, [ l, m ]), on_up: () => { w.ups++; },
-		imsi: '262991234567890', mnc_len: 2, ...O });
+		imsi: '262991234567890', mnc_len: 2, ...O, ...(answers.opts ?? {}) });
 	return w;
 }
 
@@ -149,6 +149,20 @@ eq([ err?.error, w.ctl.status().state, w.reqs[length(w.reqs) - 1], w.timers[leng
 w.answers.hang = null;
 w.fire();
 eq(w.ctl.status().state, 'up', 'silent charon: the next attempt comes up');
+
+// a second line: its own charon connection, another line's events ignored
+let SA1 = { 'wwand-vowifi1': SA[TUN.CONN] };
+w = world({ 'list-sa': [ SA1 ], opts: { conn: 'wwand-vowifi1' } });
+let loaded = null;
+let req0 = w.vici.request;
+w.vici.request = (cmd, msg, cb) => { if (cmd == 'load-conn') loaded = keys(msg); req0(cmd, msg, cb); };
+w.ctl.start(() => null);
+eq([ loaded, w.ctl.status().state, w.ctl.status().v6 ], [ [ 'wwand-vowifi1' ], 'up', '2001:db8:aa::2' ],
+	'line 1: its connection loaded, its SA\'s addresses');
+w.listeners['ike-updown'][0]({ up: 'no', [TUN.CONN]: {} });
+eq(w.ctl.status().state, 'up', 'line 1: the first line\'s IKE SA down is not ours');
+w.listeners['ike-updown'][0]({ up: 'no', 'wwand-vowifi1': {} });
+eq(w.ctl.status().state, 'down', 'line 1: its own IKE SA down');
 
 // stop: terminate, unload, link gone, no retries any more
 w = world({ 'list-sa': [ SA ] });

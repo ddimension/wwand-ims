@@ -62,6 +62,8 @@ eq(fmt.vowifi_rows({ vowifi: null }), [], 'vowifi_rows: none over the IMS PDN');
 eq(fmt.gw_rows({ backend: 'ue', modem: 'wwmodem0', listen: '192.168.1.1', port: 5060, started: T, now: T + 90 }), [
 	[ 'Backend', 'router IMS UE' ], [ 'Modem', 'wwmodem0' ], [ 'SIP listener', '192.168.1.1:5060' ],
 	[ 'Running for', '1m 30s' ] ], 'gw_rows');
+eq(fmt.gw_rows({ line: 'ue2', backend: 'ue', modem: 'wwmodem1', listen: '192.168.1.1', port: 5061, sim: 'vf_card' })
+	.map(function(r) { return r[0]; }), [ 'Line', 'Backend', 'Modem', 'SIP listener', 'SIM settings' ], 'gw_rows: the line and its SIM settings');
 
 eq(fmt.ext_rows({ extensions: { phone: { registered: true, address: '192.168.1.20', port: 5062, transport: 'UDP', expires: 3500 },
                                  fax: { registered: false } } }), [

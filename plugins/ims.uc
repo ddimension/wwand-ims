@@ -801,7 +801,13 @@ function create(deps)
 			try { bus = ubus.connect(); } catch (e) { bus = null; }
 		if (!bus)
 			return cb({ error: 'ubus' }, null);
-		bus.defer('wwand-ims', method, args, (rc, res) => {
+		// the line of this modem (one sipd per line: wwand-ims.<modem>); an
+		// older sipd has wwand-ims only
+		let obj = (args?.modem != null) ? sprintf('wwand-ims.%s', args.modem) : 'wwand-ims';
+		bus.defer(obj, method, args, (rc, res) => {
+			if (rc == 4 && obj != 'wwand-ims')	// UBUS_STATUS_NOT_FOUND
+				return bus.defer('wwand-ims', method, args, (rc2, res2) =>
+					(rc2 != 0) ? cb({ error: 'ubus', detail: rc2 }, null) : cb(null, res2));
 			if (rc != 0)
 				return cb({ error: 'ubus', detail: rc }, null);
 			cb(null, res);

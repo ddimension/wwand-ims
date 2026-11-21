@@ -189,7 +189,7 @@ function setup_sections(o)
 		  opts: { name: 'IMS-RTP', src: vrf, proto: 'udp', dest_port: rtp, target: 'ACCEPT' } },
 		{ config: 'firewall', name: vrf + '_icmp', type: 'rule',
 		  opts: { name: 'IMS-ICMP', src: vrf, proto: 'icmp ipv6-icmp', target: 'ACCEPT' } },
-		{ config: 'wwand_ims', name: 'ue', type: 'ims_modem',
+		{ config: 'wwand_ims', name: o.line ?? 'ue', type: 'ims_modem',
 		  opts: { modem: o.modem, backend: 'ue', ims_iface: ifc, vrf: vrf } },
 	];
 }
@@ -658,17 +658,19 @@ const UE_LIB_PATH = '/usr/share/wwand-ims';
 // The reader is bytecode under /usr/share/wwand-ims, which wwandctl's
 // search path does not hold: added once, then the plain lazy script whose
 // imports load it (require() reads source only)
-let _iwlan = null;
-function iwlan_lib()
+let _lazy = null;
+function lazy_lib()
 {
-	if (_iwlan)
-		return _iwlan;
+	if (_lazy)
+		return _lazy;
 	let p = UE_LIB_PATH + '/*.uc';
 	if (type(REQUIRE_SEARCH_PATH) == 'array' && index(REQUIRE_SEARCH_PATH, p) < 0)
 		push(REQUIRE_SEARCH_PATH, p);
-	_iwlan = require('ims_iwlan_lazy').IW;
-	return _iwlan;
+	_lazy = require('ims_iwlan_lazy');
+	return _lazy;
 }
+function iwlan_lib() { return lazy_lib().IW; }
+function lines_lib() { return lazy_lib().LINES; }
 
 function cmd_setup(ctx, modem, m, opts)
 {
@@ -680,9 +682,19 @@ function cmd_setup(ctx, modem, m, opts)
 		fs.writefile(dir + '/wwand_ims', '');
 	let cur = opts.confdir ? uci.cursor(opts.confdir) : uci.cursor();
 	let s = state(ctx, modem, m);
+	// the IMS line of this modem (sipd/lines.uc): its section, or a new one
+	// after the others; what it uses comes from its position, as in sipd
+	let LINES = lines_lib();
+	let lines_cfg = [], gw = null;
+	cur.foreach('wwand_ims', 'ims_modem', (x) => { push(lines_cfg, x); });
+	cur.foreach('wwand_ims', 'sip_gateway', (x) => { gw ??= x; });
+	let LN = LINES.for_modem(lines_cfg, modem) ??
+		{ name: length(lines_cfg) ? sprintf('ue_%s', modem) : 'ue', index: length(lines_cfg), im: { modem: modem } };
+	let RES = LINES.resources(LN.im, LN.index, gw);
+	printf('IMS line %s (#%d): IMS PDN %s, VRF and zone %s, table %d, SIP port %d for its phones\n',
+		LN.name, LN.index, RES.ims_iface, RES.vrf, RES.table, RES.sip_port);
 	// the relay range the firewall must open: sipd's rtp_base / rtp_span
-	let rb = 40000, rs = 200;
-	cur.foreach('wwand_ims', 'ims_modem', (x) => { rb = +(x.rtp_base ?? rb); rs = +(x.rtp_span ?? rs); });
+	let rb = RES.rtp_base, rs = RES.rtp_span;
 
 	if (!s.ims)
 		die(sprintf('no IMS profile in the modem\'s carrier config (profiles via %s: %J)', s.profiles.via,
@@ -693,13 +705,12 @@ function cmd_setup(ctx, modem, m, opts)
 
 	// VoWiFi: its sections too once wwand-ims-vowifi is installed or the
 	// ims_modem asks for it, so a later run adds them to a working setup
-	let im = {};
-	cur.foreach('wwand_ims', 'ims_modem', (x) => { if (!im['.name']) im = x; });
+	let im = LN.im;
 	let vw = null;
 	if (opts.vowifi !== false && (opts.vowifi || im.access == 'vowifi' ||
 	    fs.stat('/usr/share/wwand-ims/vowifi_lazy.uc') != null))
-		vw = { table: +(im.vowifi_table ?? 31), dev: im.vowifi_dev ?? 'imswifi0',
-		       iface: im.vowifi_iface ?? 'wwvowifi', if_id: +(im.vowifi_if_id ?? 7001), mtu: +(im.vowifi_mtu ?? 1280) };
+		vw = { table: RES.vowifi_table, dev: RES.vowifi_dev,
+		       iface: RES.vowifi_iface, if_id: RES.vowifi_if_id, mtu: +(im.vowifi_mtu ?? 1280) };
 	// VoWiFi: the carrier config's IWLAN settings into the SIM's operator
 	// profile (that one, or a new one for the SIM's PLMN)
 	let iw = null, pname = null, pnew = null;
@@ -724,14 +735,12 @@ function cmd_setup(ctx, modem, m, opts)
 		if (!best)
 			pnew = { label: s.mbn?.name ?? pname, match_imsi: substr(m.imsi ?? '', 0, 3 + mnc) };
 	}
-	let want = setup_sections({ modem: modem, profile: s.ims, iface: opts.iface, table: opts.table,
+	let want = setup_sections({ modem: modem, profile: s.ims, iface: opts.iface ?? RES.ims_iface,
+	                            table: opts.table ?? RES.table, vrf: RES.vrf, line: LN.name,
 	                            rtp: sprintf('%d-%d', rb, rb + rs - 1), vowifi: vw,
 	                            iwlan: iw, profile_name: pname, profile_new: pnew });
 	let todo = [];
 	for (let w in want) {
-		// sipd reads the first ims_modem section, whatever its name: that one
-		if (w.type == 'ims_modem')
-			cur.foreach(w.config, w.type, (x) => { if (!w.found) { w.name = x['.name']; w.found = true; } });
 		let have = cur.get_all(w.config, w.name);
 		if (have && have['.type'] != w.type)
 			die(sprintf('%s.%s exists as a %s, not a %s: rename it or pass --iface', w.config, w.name, have['.type'], w.type));
@@ -950,6 +959,7 @@ return {
 		ims_profile: ims_profile, pdp_option: pdp_option, setup_sections: setup_sections,
 		section_plan: section_plan, num_list: num_list, fgi_merge: fgi_merge,
 		iwlan_parse: (x) => iwlan_lib().parse(x), iwlan_options: (x) => iwlan_lib().options(x),
+		iwlan_read: (c, m, o) => iwlan_lib().read(c, m, o),
 		iwlan_proposal: (e, i, d) => iwlan_lib().proposal(e, i, d),
 	},
 };

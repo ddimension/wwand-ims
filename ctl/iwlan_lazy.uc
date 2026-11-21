@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0-only
 // Copyright (C) 2026 André Valentin <avalentin@marcant.net>
 // What `wwandctl ims` (ctl/ims.uc, a require()d script) loads the carrier
-// config reader through: a plain script (require() reads source) whose
+// config reader and the IMS lines (sipd_lines) through: a plain script (require() reads source) whose
 // imports load the ES modules — bytecode in the package. Installed as
 // /usr/share/wwand-ims/ims_iwlan_lazy.uc.
 
@@ -9,5 +9,6 @@
 
 import * as IW from 'ims_iwlan';
 import * as DIAG from 'ims_diag';
+import * as LINES from 'sipd_lines';
 
-return { IW: IW, DIAG: DIAG };
+return { IW: IW, DIAG: DIAG, LINES: LINES };

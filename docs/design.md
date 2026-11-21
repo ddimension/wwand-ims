@@ -418,6 +418,47 @@ that one (`sip.uc` `history_info` / `diversions`, the cause mapping of RFC
 instead. No filtering: the network applies `Privacy: history` itself.
 Open: what Telekom sends for a landline forwarded to the mobile number.
 
+### 5.10 Several IMS lines, per-SIM settings (2026-11-21)
+
+Every `ims_modem` section is an IMS line, run by an instance of sipd of its
+own (`sipd.uc --line <section>`, one procd instance per section): a crash
+or a SIM change touches one line only. `sipd/lines.uc` derives what a line
+uses from its position — the first keeps the single line's names, line i
+gets wwims<i>, VRF/zone ims<i>, tables 30+2i/31+2i, imswifi<i>, if_id
+7001+i, charon connection wwand-vowifi<i> (vowifi-strongswan.conf names
+four), SIP port +i, RTP 40000+200i, reqids 0x1500+0x100i, files with .<i>;
+an option in the section wins. Each line publishes `wwand-ims.<modem>`
+(the first also `wwand-ims`); the ims plugin's sms_send reaches the line
+of its modem; LuCI shows every line. A phone or trunk belongs to a line
+(extension option line, default the first) and registers at its port.
+
+`config ims_sim` (option iccid: one, a list or prefixes, the longest wins)
+overrides a line for one card — access, profile, smsip, epdg, vowifi_* —
+over ims_modem, over ims_profile, over the built-in values. The line reads
+its SIM's ICCID at start; when the modem has another card (slot switch,
+eSIM profile, remote SIM) the instance ends in order and procd starts it
+again for the new card. HW so far: one line on the NR7101 (the derived
+names of line 0 are the ones it always had).
+
+### 5.11 VoWiFi without a modem (2026-11-21)
+
+VoWiFi needs nothing of a modem but its USIM: the AUTHENTICATE for EAP-AKA
+(charon's ext-aka) and for IMS-AKA, and the identity. An `ims_modem` with
+`option card <reader spec>` and no modem is a line on a card alone:
+`ue/reader.uc` runs wwand-rsim's `rsim-card` (any reader it knows: PC/SC,
+Smartmouse/Phoenix, a remote modem's card over SSH, a SIM bank) and speaks
+its JSON line protocol, T=0 follow-ups (61xx GET RESPONSE, 6Cxx) resolved
+there. At start it reads EF_ICCID (MF), EF_IMSI and EF_AD (USIM ADF) — the
+ICCID picks the ims_sim, the IMSI names the tunnel and the IMPI/IMPU, AD the
+MNC length — and only then makes the tunnel. The AKA runs on the basic
+channel (the card is the line's alone). charon's ext-aka finds the card
+through sipd: no modem with that IMSI → each `wwand-ims.*` line asked over
+`card_apdu` (another line's card answers other_card). +sip.instance: no
+IMEI, so a UUID URN derived from the line and its reader (TS 24.229
+5.1.1.2.1), or option instance. Not there: an IMS PDN (access is vowifi),
+SMS over IP (no store), the carrier config's ePDG import (`setup` reads a
+modem; the profile carries vowifi_*). HW: not yet tested with a reader.
+
 ### 5.9 Kernel crypto: MT7621's EIP-93 (2026-11-21)
 
 Vodafone DE's P-CSCF offers sec-agree only as `hmac-sha-1-96` +

@@ -16,7 +16,7 @@
 // name) goes to syslog: level 0/1 as info, the failures as warn. Its other
 // connections stay out.
 //
-//   let t = CTL.create({ vici, uloop, log, run, notify, imsi, mnc_len, if_id, dev,
+//   let t = CTL.create({ vici, uloop, log, run, notify, imsi, mnc_len, conn, if_id, dev,
 //                        epdg, apn, proposals, esp_proposals, remote_auth, pani, on_up })
 //   t.start(cb(err))     the first attempt's outcome; it goes on after a failure
 //   t.status()           { state, v4, v6, pcscf: [ … ], dev, epdg, error, tries }
@@ -84,9 +84,10 @@ export function net_specs(o)
 	];
 }
 
-export function log_line(m, detail)
+export function log_line(m, detail, conn)
 {
-	if (m?.['ikesa-name'] != TUN.CONN && m?.['ikesa-name'] != null || m?.msg == null)
+	conn ??= TUN.CONN;
+	if (m?.['ikesa-name'] != conn && m?.['ikesa-name'] != null || m?.msg == null)
 		return null;
 	let lvl = +(m.level ?? 1), grp = m.group ?? '';
 	let bad = match(m.msg, /fail|error|unacceptable|AUTH_FAILED|not supported|giving up|timed out|no (proposal|matching)|NO_PROPOSAL_CHOSEN|TS_UNACCEPTABLE/i) != null;
@@ -106,6 +107,8 @@ export function create(o)
 	let vici = o.vici;
 	let st = { state: 'stopped', v4: null, v6: null, pcscf: [], error: null, tries: 0 };
 	let plmn = TUN.plmn_of(o.imsi, o.mnc_len);
+	// the charon connection of this line (several lines: wwand-vowifi<i>)
+	let CONN = o.conn ?? TUN.CONN;
 	let retry_t = null, busy = false, first_cb = null, watch_t = null, gen = 0, listening = false;
 
 	let run_all = (cmds) => {
@@ -163,10 +166,10 @@ export function create(o)
 	let addresses = () => {
 		let sa = null, my = gen;
 		let done = (err) => (my == gen) ? finished(err) : null;
-		vici.stream('list-sas', { ike: TUN.CONN }, 'list-sa', (m) => { sa ??= m; }, (err) => {
+		vici.stream('list-sas', { ike: CONN }, 'list-sa', (m) => { sa ??= m; }, (err) => {
 			if (st.state == 'stopped')
 				return done(null);
-			let v = TUN.vips_of(sa);
+			let v = TUN.vips_of(sa, CONN);
 			if (err || (!v.v4 && !v.v6))
 				return done(err ?? { error: 'no_vip', detail: 'the ePDG gave no inner address' });
 			if (my != gen)
@@ -203,7 +206,7 @@ export function create(o)
 			vici.reset?.('no answer from charon');
 			finished({ error: 'charon', detail: 'no answer from charon' });
 		});
-		vici.request('load-conn', TUN.conn_config({ imsi: o.imsi, plmn: plmn, if_id: o.if_id, epdg: o.epdg,
+		vici.request('load-conn', TUN.conn_config({ imsi: o.imsi, plmn: plmn, conn: CONN, if_id: o.if_id, epdg: o.epdg,
 			apn: o.apn, proposals: o.proposals, esp_proposals: o.esp_proposals, remote_auth: o.remote_auth,
 			rekey_s: o.rekey_s, esp_rekey_s: o.esp_rekey_s, dpd_s: o.dpd_s }),
 			(err, res) => {
@@ -212,12 +215,12 @@ export function create(o)
 				// with a log level above 1 the setup's messages at that level
 				// (control-log), which charon's global log never carries
 				let detail = +(o.loglevel ?? 1);
-				vici.stream('initiate', { child: 'ims', ike: TUN.CONN, timeout: '60000', 'init-limits': 'no',
+				vici.stream('initiate', { child: 'ims', ike: CONN, timeout: '60000', 'init-limits': 'no',
 				                          loglevel: sprintf('%d', detail) },
 					'control-log', (m) => {
 						if (detail <= 1)
 							return;
-						let l = log_line({ ...m, 'ikesa-name': m?.['ikesa-name'] ?? TUN.CONN }, detail);
+						let l = log_line({ ...m, 'ikesa-name': m?.['ikesa-name'] ?? CONN }, detail, CONN);
 						if (l)
 							log(l.level, l.msg);
 					}, (e, r) => {
@@ -247,23 +250,23 @@ export function create(o)
 		if (!listening) {
 			listening = true;
 			vici.listen('log', (m) => {
-				if (m?.['ikesa-name'] != TUN.CONN)
+				if (m?.['ikesa-name'] != CONN)
 					return;
 				// the P-CSCFs of our own attempt only
 				let p = busy ? TUN.pcscf_from_log(m?.msg) : null;
 				if (p && index(st.pcscf, p) < 0)
 					push(st.pcscf, p);
 				// while an initiate streams its own (control-log), not twice
-				let l = (busy && +(o.loglevel ?? 1) > 1) ? null : log_line(m, +(o.loglevel ?? 1));
+				let l = (busy && +(o.loglevel ?? 1) > 1) ? null : log_line(m, +(o.loglevel ?? 1), CONN);
 				if (l)
 					log(l.level, l.msg);
 			});
 			vici.listen('ike-updown', (m) => {
-				if (m?.[TUN.CONN] && m.up != 'yes')
+				if (m?.[CONN] && m.up != 'yes')
 					sa_down('IKE');
 			});
 			vici.listen('child-updown', (m) => {
-				if (m?.[TUN.CONN] && m.up != 'yes')
+				if (m?.[CONN] && m.up != 'yes')
 					sa_down('CHILD');
 			});
 		}
@@ -310,8 +313,8 @@ export function create(o)
 		gen++;
 		let was_up = (st.state == 'up');
 		st.state = 'stopped';
-		vici.request('terminate', { ike: TUN.CONN, timeout: '5000' }, () => {
-			vici.request('unload-conn', { name: TUN.CONN }, () => {
+		vici.request('terminate', { ike: CONN, timeout: '5000' }, () => {
+			vici.request('unload-conn', { name: CONN }, () => {
 				st = { state: 'stopped', v4: null, v6: null, pcscf: [], error: 'stopped', tries: 0 };
 				if (was_up)
 					o.notify?.();

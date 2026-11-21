@@ -34,6 +34,8 @@ let call = (obj, method, args, cb) => {
 };
 
 let code = 1;
+// the IMS lines (sipd) whose card may be the one, for a card without a modem
+let sipd_lines = () => filter(bus.list() ?? [], (n) => index(n, 'wwand-ims.') == 0);
 CARD.run(ARGV, call, (c, lines, err) => {
 	code = c;
 	for (let l in lines)
@@ -46,5 +48,5 @@ CARD.run(ARGV, call, (c, lines, err) => {
 		logmod.log('info', '%s', 'ext-aka: the USIM reports a sequence number out of sync (AUTS for resynchronisation)');
 	else
 		logmod.log('info', '%s', 'ext-aka: AUTHENTICATE on the USIM done (RES, CK, IK to charon)');
-});
+}, sipd_lines);
 exit(code);

@@ -45,8 +45,32 @@ w = world('9862');
 CARD.run([ 'aka', '0262991234567890@nai.epc', RAND, AUTN ], w.call, (c, l, e) => { got = [ c, l, e ]; });
 ok(got[0] == 1 && !length(got[1]) && index(got[2], 'mac') >= 0, 'run: MAC failure -> exit 1');
 CARD.run([ 'aka', '0262019999999999@nai.epc', RAND, AUTN ], w.call, (c, l, e) => { got = [ c, l, e ]; });
-ok(got[0] == 1 && index(got[2], 'no modem') >= 0, 'run: no modem with that IMSI');
+ok(got[0] == 1 && index(got[2], 'no modem or card') >= 0, 'run: no modem or card with that IMSI');
 CARD.run([ 'aka', '0262991234567890@nai.epc', 'zz', AUTN ], w.call, (c, l, e) => { got = [ c, l, e ]; });
 eq(got[0], 1, 'run: bad RAND');
+
+// no modem has the IMSI: the sipd line whose card it is (card_apdu), the
+// line with another card skipped
+let wc = { apdus: [], objs: [] };
+wc.call = (obj, method, args, cb) => {
+	if (method == 'status')
+		return cb(null, ST);
+	push(wc.objs, obj);
+	if (obj == 'wwand-ims.other')
+		return cb({ ok: false, error: 'other_card' }, null);
+	if (args.imsi != '262019999999999')
+		return cb({ ok: false, error: 'other_card' }, null);
+	if (args.op == 'open')
+		return cb(null, { channel: 0 });
+	if (args.op == 'close')
+		return cb(null, {});
+	push(wc.apdus, args.apdu);
+	cb(null, { response: db });
+};
+CARD.run([ 'aka', '0262019999999999@nai.epc', RAND, AUTN ], wc.call, (c, l, e) => { got = [ c, l, e ]; },
+	() => [ 'wwand-ims', 'wwand-ims.other', 'wwand-ims.reader0' ]);
+eq(got[0], 0, 'run: a card without a modem, through sipd\'s card_apdu');
+eq([ index(wc.objs, 'wwand-ims'), wc.objs[0], substr(lc(wc.apdus[0]), 0, 10) ], [ -1, 'wwand-ims.other', '0088008122' ],
+	'run: the lines asked in turn (not the wwand-ims alias), AUTHENTICATE on the basic channel');
 
 done();

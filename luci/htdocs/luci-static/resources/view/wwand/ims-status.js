@@ -3,16 +3,32 @@
 'require rpc';
 'require poll';
 'require dom';
+'require uci';
 'require wwand.imsfmt as fmt';
 
-/* VoLTE status (wwand-ims): sipd's own view — the IMS registration of the
-   router's UE, the phones registered at sipd, the running call and the last
-   calls. Everything comes from `ubus call wwand-ims status|calls` (read
-   acl); sipd publishes that object, so when sipd does not run there is
-   nothing to show but that. Refreshed every 5 s. */
+/* VoLTE status (wwand-ims): sipd's own view, per IMS line (one sipd per
+   ims_modem section) — the IMS registration of the router's UE, the phones
+   registered at that line, the running call and the last calls. Everything
+   comes from `ubus call wwand-ims.<modem> status|calls` (read acl; an
+   older sipd has `wwand-ims` only); when a line's sipd does not run there
+   is nothing to show for it but that. Refreshed every 5 s. */
 
-var callStatus = rpc.declare({ object: 'wwand-ims', method: 'status', expect: { '': {} } });
-var callCalls = rpc.declare({ object: 'wwand-ims', method: 'calls', expect: { '': {} } });
+var rpcs = {};
+function lineCall(obj, method) {
+	var k = obj + '/' + method;
+	if (!rpcs[k])
+		rpcs[k] = rpc.declare({ object: obj, method: method, expect: { '': {} } });
+	return L.resolveDefault(rpcs[k](), null);
+}
+
+/* the lines: the ims_modem sections, each with its modem's object */
+function lines() {
+	var out = uci.sections('wwand_ims', 'ims_modem').map(function(s, i) {
+		return { name: s['.name'], modem: s.modem, index: i,
+		         obj: (s.modem || s.card) ? 'wwand-ims.' + (s.modem || s['.name']) : 'wwand-ims' };
+	});
+	return out.length ? out : [ { name: null, modem: null, index: 0, obj: 'wwand-ims' } ];
+}
 
 /* [ label, text ] rows as a two-column table. Values as arrays: they come
    from the network (identities, addresses) and must not go through
@@ -50,18 +66,33 @@ function empty(text) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([
-			L.resolveDefault(callStatus(), null),
-			L.resolveDefault(callCalls(), null),
-		]);
+		return uci.load('wwand_ims').then(function() {
+			return Promise.all(lines().map(function(l) {
+				return Promise.all([ lineCall(l.obj, 'status'), lineCall(l.obj, 'calls') ]).then(function(r) {
+					/* the first line answers on wwand-ims as well (older sipd) */
+					if (!r[0] && l.index == 0 && l.obj != 'wwand-ims')
+						return Promise.all([ lineCall('wwand-ims', 'status'), lineCall('wwand-ims', 'calls') ])
+							.then(function(r2) { return { line: l, st: r2[0], calls: r2[1] }; });
+					return { line: l, st: r[0], calls: r[1] };
+				});
+			}));
+		});
 	},
 
 	renderAll: function(data) {
-		var st = data[0], calls = data[1];
+		var many = data.length > 1;
 
+		return E('div', {}, data.map(L.bind(function(d) {
+			var title = many ? _('Line %s (%s)').format(d.line.name, d.line.modem || '?') : null;
+			var body = this.renderLine(d.st, d.calls);
+			return title ? E('div', { 'class': 'cbi-section' }, [ E('h2', {}, [ title ]), body ]) : body;
+		}, this)));
+	},
+
+	renderLine: function(st, calls) {
 		if (!st || st.backend == null)
 			return E('div', {}, [
-				section(_('IMS'), [ empty(_('sipd is not running (service wwand-ims-sipd). Set it up under Network → VoLTE, then start it.')) ]),
+				section(_('IMS'), [ empty(_('sipd is not running for this line (service wwand-ims-sipd). Set it up under Network → VoLTE, then start it.')) ]),
 			]);
 
 		var parts = [];

@@ -25,3 +25,5 @@ tests/vowifi_ctl.uc
 tests/ims_iwlan.uc
 tests/ims_iwlan_lazy.uc
 tests/ue_kcrypto.uc
+tests/sipd_lines.uc
+tests/ue_reader.uc

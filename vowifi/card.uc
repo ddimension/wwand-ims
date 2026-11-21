@@ -39,7 +39,35 @@ export function modem_of(status, imsi)
 	return (length(names) == 1 && ms[names[0]]?.imsi == null) ? names[0] : null;
 }
 
-export function run(args, call, cb)
+// the card of an IMS line without a modem (sipd's card_apdu, ims_modem
+// option card), as the AKA code takes it
+export function sipd_card(call, obj, imsi)
+{
+	let base = { imsi: imsi };
+	return {
+		open: (aid, cb) => call(obj, 'card_apdu', { ...base, op: 'open', aid: aid },
+			(err, r) => cb(err ?? (r?.channel == null ? 'no channel' : null), r?.channel)),
+		send: (ch, apdu, cb) => call(obj, 'card_apdu', { ...base, op: 'send', channel: ch, apdu: apdu },
+			(err, r) => cb(err ?? (r?.response == null ? 'no response' : null), r?.response)),
+		close: (ch, cb) => call(obj, 'card_apdu', { ...base, op: 'close', channel: ch }, (err) => cb(err)),
+	};
+}
+
+// the sipd line that holds the card with this IMSI: asks each wwand-ims.*
+// object (lines() -> names); cb(obj or null)
+function line_with(call, lines, imsi, cb)
+{
+	let names = filter(lines?.() ?? [], (n) => n != 'wwand-ims');
+	let step;
+	step = (i) => {
+		if (i >= length(names))
+			return cb(null);
+		call(names[i], 'card_apdu', { imsi: imsi, op: 'close', channel: 0 }, (err) => err ? step(i + 1) : cb(names[i]));
+	};
+	step(0);
+}
+
+export function run(args, call, cb, lines)
 {
 	if (args?.[0] != 'aka' || length(args) < 4)
 		return cb(1, [], 'usage: ext-aka aka <identity> <RAND hex> <AUTN hex>');
@@ -52,15 +80,18 @@ export function run(args, call, cb)
 	call('wwand', 'status', {}, (err, st) => {
 		if (err)
 			return cb(1, [], sprintf('ext-aka: wwand status: %J', err));
-		let modem = modem_of(st, imsi);
-		if (!modem)
-			return cb(1, [], sprintf('ext-aka: no modem with IMSI %s', imsi));
-		AKA.authenticate(AKA.wwand_card(call, modem), AKA.AID_USIM, rand, autn, (e, r) => {
+		let auth = (card, where) => AKA.authenticate(card, AKA.AID_USIM, rand, autn, (e, r) => {
 			if (e && !r)
-				return cb(1, [], sprintf('ext-aka: AUTHENTICATE on %s: %J', modem, e));
+				return cb(1, [], sprintf('ext-aka: AUTHENTICATE on %s: %J', where, e));
 			if (r.sync)
 				return cb(0, [ 'AUTS ' + hexenc(r.auts) ], null);
 			cb(0, [ 'RES ' + hexenc(r.res), 'CK ' + hexenc(r.ck), 'IK ' + hexenc(r.ik) ], null);
 		});
+		let modem = modem_of(st, imsi);
+		if (modem)
+			return auth(AKA.wwand_card(call, modem), modem);
+		// no modem has it: a line's card without a modem (sipd)
+		line_with(call, lines, imsi, (obj) => obj ? auth(sipd_card(call, obj, imsi), obj)
+		                                          : cb(1, [], sprintf('ext-aka: no modem or card with IMSI %s', imsi)));
 	});
 }

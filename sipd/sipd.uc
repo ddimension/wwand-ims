@@ -23,8 +23,10 @@ import * as CALL from 'ue_call';
 import * as LINE from 'sipd_line_ue';
 import * as RELAY from 'sipd_relay';
 import * as PROFILE from 'sipd_profile';
+import * as LINES from 'sipd_lines';
 import * as IW from 'ims_iwlan';
 import * as KC from 'ue_kcrypto';
+import * as READER from 'ue_reader';
 import { DEFAULT_ALGS, DEFAULT_EALGS } from 'ue_secagree';
 import * as logmod from 'wwand.log';
 import * as sms_pdu from 'wwand.sms_pdu';
@@ -37,7 +39,15 @@ let CORE = require('sipd_core');
 // back to stderr when wwand_io or /dev/log is unavailable (host tests). The
 // `log` callback is handed down to line_ue/core/relay, so this fixes the
 // "ue: ..." lines too.
-let verbose = (ARGV[0] == '-v');
+// sipd [-v] [--line <ims_modem section or modem>]: one instance per IMS
+// line (files/wwand-ims-sipd.init starts one per ims_modem section)
+let verbose = false, line_want = null;
+for (let i = 0; i < length(ARGV); i++) {
+	if (ARGV[i] == '-v')
+		verbose = true;
+	else if (ARGV[i] == '--line')
+		line_want = ARGV[++i];
+}
 let _io = null;
 try { _io = require('wwand_io'); } catch (e) { _io = null; }
 logmod.open(_io, { ident: 'wwand-ims-sipd', level: verbose ? 'debug' : 'info' });
@@ -48,21 +58,35 @@ let log = (lv, msg) => logmod.log(lv, '%s', msg);
 let cur = uci.cursor();
 let gw = null, users = {}, modem = null;
 
-let im = null;
 cur.foreach('wwand_ims', 'sip_gateway', (s) => { gw ??= s; });
-cur.foreach('wwand_ims', 'ims_modem', (s) => { im ??= s; });
+// the IMS lines (sipd_lines.uc): this instance runs the one --line names, or
+// the first; what it uses comes from its position among them
+let lines_cfg = [], sims = [], exts = [];
+cur.foreach('wwand_ims', 'ims_modem', (s) => { push(lines_cfg, s); });
+cur.foreach('wwand_ims', 'ims_sim', (s) => { push(sims, s); });
+cur.foreach('wwand_ims', 'extension', (s) => { push(exts, s); });
+let LN = LINES.pick(lines_cfg, line_want);
+if (line_want != null && !LN) {
+	log('error', sprintf('sipd: no ims_modem section or modem %s in /etc/config/wwand_ims', line_want));
+	exit(1);
+}
+let RES = LINES.resources(LN?.im, LN?.index ?? 0, gw);
+if (RES.index > 0)
+	logmod.open(_io, { ident: sprintf('wwand-ims-sipd.%s', LN.name), level: verbose ? 'debug' : 'info' });
 // the operator profiles; the one for the SIM is picked at each registration
 let profiles = [];
 cur.foreach('wwand_ims', 'ims_profile', (s) => { push(profiles, s); });
-cur.foreach('wwand_ims', 'extension', (s) => {
+// the phones / PBX of this line (option line; without one: the first line)
+for (let s in LINES.extensions(exts, LN?.name, RES.index)) {
 	if (s.username && s.password) {
 		users[s.username] = { password: s.password };
 		modem ??= s.modem;
 	}
-});
+}
 
 if (!gw || !length(keys(users))) {
-	log('error', 'sipd: no sip_gateway or no extension with username and password in /etc/config/wwand_ims');
+	log('error', sprintf('sipd: no sip_gateway or no extension with username and password for line %s in /etc/config/wwand_ims',
+		LN?.name ?? '-'));
 	exit(1);
 }
 
@@ -73,6 +97,26 @@ if (!bus) {
 	log('error', 'sipd: no ubus');
 	exit(1);
 }
+
+// a line with a card but no modem (ims_modem option card: a reader spec of
+// wwand-rsim's rsim-card, ue/reader.uc): VoWiFi only, the identity read from
+// the card once it answers
+let CARD = LN?.im?.card;
+if (CARD) {
+	modem = LN.im.modem ?? LN.name;
+	RES.objects = (RES.index == 0) ? [ 'wwand-ims', sprintf('wwand-ims.%s', modem) ] : [ sprintf('wwand-ims.%s', modem) ];
+}
+
+// the line's settings with its SIM's (ims_sim, by ICCID) over them; a card
+// that changes under the line (slot switch, eSIM profile, remote SIM) ends
+// this instance so procd starts it anew for the new card
+modem = LN?.im?.modem ?? modem ?? 'wwmodem0';
+let sim_iccid = CARD ? null : bus.call('wwand', 'status', {})?.modems?.[modem]?.iccid;
+let SIM = LINES.sim_for(sims, sim_iccid);
+let im = LN ? LINES.effective(LN.im, SIM) : null;
+if (SIM)
+	log('info', sprintf('sipd: line %s, SIM %s: overrides from ims_sim %s', LN?.name ?? '-',
+		substr(sim_iccid ?? '', 0, 8) + '…', SIM['.name']));
 
 // `listen` names a netifd interface or is an address
 let listen_ip = gw.listen ?? 'lan';
@@ -85,17 +129,17 @@ if (!listen_ip) {
 	exit(1);
 }
 
-let port = +(gw.port ?? 5060);
+let port = RES.sip_port;
 
 // option sip_trace '<file>': every SIP message, LAN and IMS side, in full
 // into that file (the IMS side is ESP, no packet capture shows it; syslog
 // would cut an INVITE short). For debugging only: it holds identities.
-let trace_fd = gw.sip_trace ? fs.open(gw.sip_trace, 'a', 0o600) : null;
+let trace_fd = RES.sip_trace ? fs.open(RES.sip_trace, 'a', 0o600) : null;
 // an existing file keeps its mode: root only all the same
 if (trace_fd)
-	fs.chmod?.(gw.sip_trace, 0o600);
-if (gw.sip_trace && !trace_fd)
-	log('warn', sprintf('sipd: cannot open sip_trace %s: %s', gw.sip_trace, fs.error()));
+	fs.chmod?.(RES.sip_trace, 0o600);
+if (RES.sip_trace && !trace_fd)
+	log('warn', sprintf('sipd: cannot open sip_trace %s: %s', RES.sip_trace, fs.error()));
 let trace = trace_fd ? (dir, peer, text) => {
 	let t = clock(), lt = localtime(t[0]);
 	trace_fd.write(sprintf('==== %04d-%02d-%02d %02d:%02d:%02d.%03d %s %s\n%s\n',
@@ -103,7 +147,6 @@ let trace = trace_fd ? (dir, peer, text) => {
 	trace_fd.flush();
 } : null;
 let codecs = filter(gw.codec ?? [ 'pcma', 'pcmu' ], (c) => c in { pcma: 1, pcmu: 1, g722: 1 });
-modem ??= im?.modem ?? 'wwmodem0';
 let backend = im?.backend ?? 'qmi';
 
 // ---- transport ----------------------------------------------------------------------
@@ -174,10 +217,10 @@ let media = {
 
 // the phones' / PBX's registrations survive a restart of sipd (they are kept
 // until their expiry; a PBX would else be unreachable until it registers again)
-const BINDINGS = '/var/run/wwand-ims-sipd.bindings';
+const BINDINGS = RES.bindings;
 // the last calls (sipd_core HISTORY). RAM by default; option call_history on
 // sip_gateway puts it elsewhere (on flash it is one write per call)
-let HISTORY_FILE = gw.call_history ?? '/var/run/wwand-ims-sipd.calls';
+let HISTORY_FILE = RES.history;
 let started = time();
 
 // the UE line's state for `wwandctl status`: the 'ue' backend broadcasts it on
@@ -193,11 +236,32 @@ let core = null, line = null, relay = null, vowifi = null;
 let vowifi_net = null;
 // the kernel crypto check (ue/kcrypto.uc), backend ue
 let kc_opts = null;
+// the orderly end (SIGTERM, another SIM): declared here, the tick calls it
+let stop = null;
 
 // ims_modem option access 'vowifi': the UE's IMS goes through an IKEv2
 // tunnel to the operator's ePDG instead of the IMS PDN (wwand-ims-vowifi,
 // its modules loaded only then)
-let access = im?.access ?? 'pdn';
+let access = CARD ? 'vowifi' : (im?.access ?? 'pdn');
+if (CARD && backend != 'ue') {
+	log('error', sprintf('sipd: line %s: a card without a modem needs backend ue', LN?.name ?? '-'));
+	exit(1);
+}
+
+// the card reader (ims_modem option card): started below; its identity
+// (ICCID, IMSI, MNC length) and the card for the AKA
+let reader = null, card_info = null, card_instance = null;
+if (CARD) {
+	// the helper gone (reader unplugged, SSH link down): this instance ends,
+	// procd starts it again, the card powered up and read anew
+	reader = READER.create({ spec: CARD, log: log, ssh_key: LN.im.card_ssh_key, on_gone: () => stop?.(),
+		spawn: (argv, on_line, on_exit) => READER.spawn_lines(_io, uloop, argv, on_line, on_exit) });
+	// +sip.instance: a UUID URN stable for this line (TS 24.229 5.1.1.2.1
+	// allows one where there is no IMEI), from the config or derived
+	card_instance = LN.im.instance ?? READER.instance_urn(sprintf('wwand-ims/%s/%s', LN.name, CARD), require('sipd_sip').md5);
+}
+// the VoWiFi tunnel's controller, made once the SIM's identity is known
+let make_vowifi = null;
 
 if (backend == 'ue' && access == 'vowifi') {
 	let VICI = null, CTL = null;
@@ -211,13 +275,9 @@ if (backend == 'ue' && access == 'vowifi') {
 		log('error', 'sipd: access vowifi needs the package wwand-ims-vowifi');
 		exit(1);
 	}
-	let st = bus.call('wwand', 'status', {});
-	let m = st?.modems?.[modem ?? im.modem];
-	if (!m?.imsi) {
-		// procd starts sipd again; by then the modem has read its card
-		log('warn', sprintf('sipd: vowifi: modem %s has no IMSI yet', modem ?? im.modem ?? '?'));
-		exit(1);
-	}
+	// the tunnel for the SIM `m` ({ imsi, iccid, mnc_len? }): from the modem
+	// at once, from a card reader once it is read
+	make_vowifi = (m) => {
 	// what the operator's ePDG wants: the SIM's ims_profile (vowifi_*), and
 	// ims_modem's own option over it
 	let p = PROFILE.select(profiles, im.profile, { imsi: m.imsi, iccid: m.iccid }) ?? {};
@@ -228,14 +288,14 @@ if (backend == 'ue' && access == 'vowifi') {
 	let vici = VICI.create({ socket: socket, uloop: uloop, log: log, on_close: (why) => vowifi?.vici_closed(why) });
 	// the netifd interface (proto wwandvowifi) that takes the tunnel's IP
 	// configuration: renew it whenever the tunnel comes up
-	let vw_iface = im.vowifi_iface ?? 'wwvowifi';
+	let vw_iface = RES.vowifi_iface;
 	vowifi = CTL.create({ vici: vici, uloop: uloop, log: log,
 		run: (argv) => system(argv),
 		// deferred: the proto handler asks sipd (vowifi_addr) back right away
 		notify: () => bus.defer(sprintf('network.interface.%s', vw_iface), 'renew', {},
 			(rc) => rc ? log('warn', sprintf('vowifi: netifd renew %s: %s', vw_iface, ubus.error() ?? rc)) : null),
-		imsi: m.imsi, mnc_len: im.mnc_len ? +im.mnc_len : LINE.home_mnc_len(m),
-		if_id: +(im.vowifi_if_id ?? 7001), dev: im.vowifi_dev ?? 'imswifi0',
+		imsi: m.imsi, mnc_len: im.mnc_len ? +im.mnc_len : (m.mnc_len ?? LINE.home_mnc_len(m)),
+		if_id: RES.vowifi_if_id, dev: RES.vowifi_dev, conn: RES.vowifi_conn,
 		epdg: im.epdg ?? p.vowifi_epdg, apn: opt('vowifi_apn'),
 		proposals: lst('vowifi_proposals'), esp_proposals: lst('vowifi_esp_proposals'),
 		remote_auth: opt('vowifi_remote_auth'), pani: opt('vowifi_pani'),
@@ -253,9 +313,9 @@ if (backend == 'ue' && access == 'vowifi') {
 	// runs again on sipd's tick. A section of that name in
 	// /etc/config/network (an older `wwandctl ims setup` wrote them) is used
 	// as it is.
-	let specs = CTL.net_specs({ dev: im.vowifi_dev ?? 'imswifi0', iface: vw_iface,
-		if_id: im.vowifi_if_id ?? 7001, mtu: im.vowifi_mtu ?? 1280, table: im.vowifi_table ?? 31,
-		zone: im.vowifi_zone ?? 'ims' });
+	let specs = CTL.net_specs({ dev: RES.vowifi_dev, iface: vw_iface,
+		if_id: RES.vowifi_if_id, mtu: im.vowifi_mtu ?? 1280, table: RES.vowifi_table,
+		zone: RES.vowifi_zone });
 	let is_static = (name) => cur.get('network', name) == 'interface';
 	vowifi_net = {
 		ensure: () => {
@@ -278,6 +338,17 @@ if (backend == 'ue' && access == 'vowifi') {
 					bus.call(sprintf('network.interface.%s', specs[i].name), 'remove', {});
 		},
 	};
+	};
+	if (!CARD) {
+		let st = bus.call('wwand', 'status', {});
+		let m = st?.modems?.[modem ?? im.modem];
+		if (!m?.imsi) {
+			// procd starts sipd again; by then the modem has read its card
+			log('warn', sprintf('sipd: vowifi: modem %s has no IMSI yet', modem ?? im.modem ?? '?'));
+			exit(1);
+		}
+		make_vowifi(m);
+	}
 }
 
 if (backend == 'ue') {
@@ -332,23 +403,27 @@ if (backend == 'ue') {
 			kc_settle(null);
 	};
 	relay = RELAY.create({ socket: socket, uloop: uloop, lan_ip: listen_ip,
-		ims_ip: () => line?.ue_addr(), vrf: () => vowifi ? vowifi.access()?.bind : im.vrf, log: log,
-		base: +(im.rtp_base ?? 40000), span: +(im.rtp_span ?? 200),
+		ims_ip: () => line?.ue_addr(), vrf: () => vowifi ? vowifi.access()?.bind : RES.vrf, log: log,
+		base: RES.rtp_base, span: RES.rtp_span,
 		rtp_timeout: () => line?.profile()?.rtp_timeout,
 		rtcp_timeout: () => line?.profile()?.rtcp_timeout });
 	line = LINE.create({ bus: bus, uloop: uloop, socket: socket, xfrm: xfrm,
 		on_xfrm_refused: (err) => kc_opts.refused(),
-		modem: modem, iface: im.ims_iface ?? 'wwims', vrf: im.vrf,
+		modem: modem, iface: RES.ims_iface, vrf: RES.vrf, reqid_base: RES.reqid_base,
 		// the APN to find the IMS PDN's line in AT+CGCONTRDP: config, else the
 		// interface's own option apn
-		apn: im.ims_apn ?? cur.get('network', im.ims_iface ?? 'wwims', 'apn'),
+		apn: im.ims_apn ?? cur.get('network', RES.ims_iface, 'apn'),
 		mnc_len: im.mnc_len ? +im.mnc_len : null,
 		pcscf: im.pcscf, relay: relay, log: log, trace: trace,
-		access: vowifi ? (() => vowifi.access()) : null,
+		access: (vowifi || CARD) ? (() => vowifi?.access()) : null,
+		// a card without a modem: the identity read from it, the AKA on it;
+		// the IMEI is not there — +sip.instance a UUID URN of the line's own
+		sim_info: CARD ? (() => card_info ? { ...card_info, instance: card_instance } : null) : null,
+		card: reader ? reader.card() : null,
 		// SMS over IP (ims_modem option smsip): what arrives is written into
 		// the modem's own store (option sms_storage, ME or SM), as if the
 		// modem had received it, and managed there like any SMS
-		smsip: (im.smsip == '1' || im.smsip == 'on' || im.smsip == 'true'),
+		smsip: !CARD && (im.smsip == '1' || im.smsip == 'on' || im.smsip == 'true'),
 		encode_submit: sms_pdu.encode_submit,
 		deliver: (pdu, cb) => {
 			let r = bus.call('wwand', 'modem_sms_deliver', { modem: modem, storage: (im.sms_storage == 'SM') ? 'SM' : 'ME',
@@ -414,11 +489,13 @@ core.restore_history(saved);
 
 // ---- ubus: what a status page shows (luci-app-wwand-ims) ---------------------------------
 // Every method takes ubus_rpc_session, as LuCI sends it (wwand's rule).
-let ubus_obj = bus.publish('wwand-ims', {
+// one object per line, wwand-ims.<modem>; the first line also as wwand-ims
+let ubus_methods = {
 	status: {
 		args: { ubus_rpc_session: '' },
 		call: (req) => ({
-			backend: backend, modem: modem, listen: listen_ip, port: port, started: started, now: time(),
+			line: LN?.name, backend: backend, modem: modem, listen: listen_ip, port: port, started: started, now: time(),
+			sim: SIM ? SIM['.name'] : null,
 			ue: line ? line.status() : null,
 			vowifi: vowifi ? vowifi.status() : null,
 			extensions: core.extensions(),
@@ -489,9 +566,30 @@ let ubus_obj = bus.publish('wwand-ims', {
 				req.reply(err ? { ok: false, ...err } : { ok: true, ...(res ?? {}) }));
 		},
 	},
-});
-if (!ubus_obj)
-	log('warn', sprintf('sipd: cannot publish ubus object wwand-ims: %s', ubus.error()));
+	// the line's card without a modem, for strongSwan's ext-aka (vowifi/
+	// card.uc): the same shape as wwand's modem_apdu; imsi names the card
+	// meant, another line's answers other_card
+	card_apdu: {
+		args: { imsi: '', op: '', aid: '', channel: 0, apdu: '', ubus_rpc_session: '' },
+		call: (req) => {
+			if (!reader || !card_info)
+				return { ok: false, error: 'no_card' };
+			if (req.args.imsi && req.args.imsi != card_info.imsi)
+				return { ok: false, error: 'other_card' };
+			req.defer();
+			reader.apdu(req.args, (err, res) =>
+				req.reply(err ? { ok: false, ...(type(err) == 'object' ? err : { error: 'card', detail: err }) } : { ok: true, ...(res ?? {}) }));
+		},
+	},
+};
+let ubus_objs = [];
+for (let name in RES.objects) {
+	let o = bus.publish(name, ubus_methods);
+	if (o)
+		push(ubus_objs, o);
+	else
+		log('warn', sprintf('sipd: cannot publish ubus object %s: %s', name, ubus.error()));
+}
 
 // publish the UE line's state so `wwandctl status` (the ims plugin) can show it
 let emit_ue_status = (state) => {
@@ -512,16 +610,50 @@ let emit_ue_status = (state) => {
 
 if (line) {
 	let ue_tick;
-	ue_tick = () => { emit_ue_status(); vowifi_net?.ensure(); uloop.timer(5000, ue_tick); };
+	ue_tick = () => {
+		// another card in the modem: this instance ends, procd starts it anew
+		// with that card's settings (ims_sim)
+		let now_iccid = CARD ? null : bus.call('wwand', 'status', {})?.modems?.[modem]?.iccid;
+		if (now_iccid && now_iccid != sim_iccid) {
+			log('info', sprintf('sipd: line %s: the modem has another SIM now; starting again for it', LN?.name ?? '-'));
+			return stop();
+		}
+		emit_ue_status();
+		vowifi_net?.ensure();
+		uloop.timer(5000, ue_tick);
+	};
 	// over VoWiFi the tunnel first: the controller keeps it up from here
 	// on, the line registers when netifd has its address (or retries)
-	if (vowifi) {
+	let tunnel_up = () => {
 		// after the crypto check (a faulty driver module unloaded first)
 		let go = () => { vowifi_net.ensure(); vowifi.start(null); };
 		kc_opts ? kc_opts.settle(go) : go();
 		bus.listener('network.interface', (type, data) => {
 			if (data?.interface == vowifi.iface && (data?.action == 'ifup' || data?.action == 'ifupdate') && vowifi.access())
 				line?.retry_now();
+		});
+	};
+	if (vowifi)
+		tunnel_up();
+	// a card without a modem: the tunnel once the card is read (its IMSI
+	// names the tunnel's identity, its ICCID picks the ims_sim); a card that
+	// does not answer ends the instance, procd tries again
+	if (CARD) {
+		reader.start((err, info) => {
+			if (err) {
+				log('warn', sprintf('sipd: line %s: card %s: %s', LN?.name ?? '-', CARD, err.detail ?? err.error));
+				return stop();
+			}
+			card_info = info;
+			let sim = LINES.sim_for(sims, info.iccid);
+			if (sim) {
+				log('info', sprintf('sipd: line %s, SIM %.8s…: overrides from ims_sim %s', LN?.name ?? '-', info.iccid, sim['.name']));
+				im = LINES.effective(LN.im, sim);
+				SIM = sim;
+			}
+			log('info', sprintf('sipd: line %s: card %s, IMSI %.5s…, VoWiFi without a modem', LN?.name ?? '-', CARD, info.imsi));
+			make_vowifi(info);
+			tunnel_up();
 		});
 	}
 	line.start();
@@ -532,7 +664,7 @@ else
 
 // SIGTERM / SIGINT: the UE de-REGISTERs and takes its SAs down first
 let stopping = false;
-let stop = () => {
+stop = () => {
 	if (stopping)
 		return;
 	stopping = true;
@@ -541,7 +673,8 @@ let stop = () => {
 	if (!line)
 		return uloop.end();
 	uloop.timer(5000, () => uloop.end());
-	line.stop(() => vowifi ? vowifi.stop(() => { vowifi_net?.remove(); uloop.end(); }) : uloop.end());
+	let done_ = () => { reader?.stop(); uloop.end(); };
+	line.stop(() => vowifi ? vowifi.stop(() => { vowifi_net?.remove(); done_(); }) : done_());
 };
 signal('SIGTERM', stop);
 signal('SIGINT', stop);
@@ -624,8 +757,8 @@ uloop.handle(tcp.fileno(), () => {
 	}, uloop.ULOOP_READ);
 }, uloop.ULOOP_READ);
 
-log('info', sprintf('sipd: listening on UDP and TCP %s:%d for %s, modem %s, backend %s%s',
-	listen_ip, port, join(',', keys(users)), modem, backend,
+log('info', sprintf('sipd: line %s: listening on UDP and TCP %s:%d for %s, modem %s, backend %s%s',
+	LN?.name ?? '-', listen_ip, port, join(',', keys(users)), modem, backend,
 	vowifi ? sprintf(' (VoWiFi to %s)', vowifi.status().epdg ?? '?')
-	: (line ? sprintf(' (IMS PDN %s, VRF %s)', im.ims_iface ?? 'wwims', im.vrf ?? '-') : ', codecs ' + join(',', codecs))));
+	: (line ? sprintf(' (IMS PDN %s, VRF %s)', RES.ims_iface, RES.vrf) : ', codecs ' + join(',', codecs))));
 uloop.run();

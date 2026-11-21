@@ -78,6 +78,18 @@ ok(!vb['network.imswifi0'] && !vb['network.wwvowifi'] && !vb['network.imswifi'],
 	'setup vowifi: no tunnel interfaces in /etc/config/network (dynamic, sipd)');
 eq(vb['firewall.ims'].lists, { device: [ 'ims' ] }, 'setup vowifi: the zone unchanged');
 
+// a second IMS line (sipd/lines.uc resources for #1): its own interface,
+// VRF/zone, table and ims_modem section
+let l2 = T.setup_sections({ modem: 'wwmodem1', profile: cg[1], iface: 'wwims1', vrf: 'ims1', table: 32, line: 'ue_wwmodem1' });
+let lb = {};
+for (let x in l2)
+	lb[x.config + '.' + x.name] = x;
+eq([ lb['network.wwims1'].opts.ip6table, lb['network.wwims1'].opts.zone, lb['network.ims1'].opts.table,
+     lb['network.ims1'].lists.ports, lb['firewall.ims1'].opts.name, lb['firewall.ims1_sip'].opts.src,
+     lb['wwand_ims.ue_wwmodem1'].opts ],
+	[ '32', 'ims1', '32', [ 'wwims1' ], 'ims1', 'ims1', { modem: 'wwmodem1', backend: 'ue', ims_iface: 'wwims1', vrf: 'ims1' } ],
+	'setup line 1: its interface, VRF, table, zone and rules, its ims_modem section');
+
 // ---- VoWiFi settings from the carrier config (iwlan_s2b_config.xml) ------------------
 // a hand-made file of the structure Qualcomm's carrier configs carry
 let IW = '<?xml version="1.0" ?>\n<IWLAN_S2B_CONFIG>\n  <GENERIC_VARIANT>\n    <epdg_addr_info>\n' +
@@ -92,6 +104,14 @@ let IW = '<?xml version="1.0" ?>\n<IWLAN_S2B_CONFIG>\n  <GENERIC_VARIANT>\n    <
 	'    </ikev2_info>\n  </GENERIC_VARIANT>\n  <WP_VARIANT>\n    <ikev2_info>\n      <esp_auth_algo_list>\n' +
 	'        <algo value="1"/>\n      </esp_auth_algo_list>\n    </ikev2_info>\n  </WP_VARIANT>\n</IWLAN_S2B_CONFIG>\n';
 let ix = T.iwlan_parse(IW);
+
+// --mbn FILE: the settings from that file only — the modem's EFS (AT+QNVFR,
+// DIAG) is never asked, not even when the file is unreadable
+let efs_calls = [];
+let rd = T.iwlan_read((m, a) => { push(efs_calls, m); return null; }, 'wwmodem0', { mbn: '/nonexistent/base.mbn' });
+eq([ rd.xml, rd.why, efs_calls ], [ null, 'cannot read the file', [] ], 'iwlan read --mbn: no EFS access, even for a missing file');
+rd = T.iwlan_read((m, a) => { push(efs_calls, m); return null; }, 'wwmodem0', {});
+ok(index(efs_calls, 'modem_at') >= 0, 'iwlan read without --mbn: the modem\'s EFS (AT+QNVFR)');
 eq([ ix.dh, ix.ike_integ, ix.esp_integ, ix.ike_rekey_s, ix.esp_rekey_s, ix.dpd, ix.peer_id_type, ix.peer_id, ix.static_fqdn ],
 	[ [ '14', '5' ], [ '12', '2' ], [ '2' ], '86400', '14400', 'TRUE', 'ID_FQDN', null, null ],
 	'iwlan_parse: the GENERIC_VARIANT only (not the WP one), groups, hashes, timers, DPD, peer id');

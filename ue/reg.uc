@@ -194,9 +194,12 @@ export function create(o)
 		let expires = (phase == 'dereg') ? 0 : (o.expires ?? 600000);
 		let via_port = o.port_s;
 		let branch = 'z9hG4bK' + rnd_hex(8);
-		let contact = sprintf('<sip:%s@%s>;expires=%d;+sip.instance=%s;+g.3gpp.icsi-ref=%s%s',
+		// +sip.instance: the IMEI (TS 24.229 5.1.1.2.1), else a UUID URN
+		// (a card without a modem: o.instance), else none
+		let inst = imei_urn(o.imei) ?? o.instance;
+		let contact = sprintf('<sip:%s@%s>;expires=%d%s;+g.3gpp.icsi-ref=%s%s',
 			o.imsi ?? split(ids.impi, '@')[0], hostport(o.ue_addr, o.port_s), expires,
-			q('<' + imei_urn(o.imei) + '>'), q(MMTEL), o.smsip ? ';+g.3gpp.smsip' : '');
+			inst ? ';+sip.instance=' + q('<' + inst + '>') : '', q(MMTEL), o.smsip ? ';+g.3gpp.smsip' : '');
 
 		self.cseq++;
 

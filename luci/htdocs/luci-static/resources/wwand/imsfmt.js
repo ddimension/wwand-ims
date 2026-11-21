@@ -151,6 +151,10 @@ return baseclass.extend({
 			[ _('Modem'), st.modem || '-' ],
 			[ _('SIP listener'), '%s:%d'.format(st.listen || '?', +(st.port || 0)) ],
 		];
+		if (st.line)
+			rows.unshift([ _('Line'), st.line ]);
+		if (st.sim)
+			rows.push([ _('SIM settings'), st.sim ]);
 		if (st.started != null && st.now != null)
 			rows.push([ _('Running for'), dur(st.now - st.started) ]);
 		return rows;

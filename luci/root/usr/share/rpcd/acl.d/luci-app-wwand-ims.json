@@ -10,6 +10,11 @@
 				],
 				"wwand": [
 					"status"
+				],
+				"wwand-ims.*": [
+					"status",
+					"calls",
+					"profile_snapshot"
 				]
 			},
 			"uci": [

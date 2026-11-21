@@ -54,7 +54,7 @@ export function nai(imsi, plmn)
 }
 
 // The vici load-conn message (strongSwan's swanctl.conf keys, as a tree).
-// o: { imsi, plmn, epdg?, apn?, if_id, proposals?, esp_proposals?, remote_auth?,
+// o: { imsi, plmn, conn?, epdg?, apn?, if_id, proposals?, esp_proposals?, remote_auth?,
 //      rekey_s?, esp_rekey_s?, dpd_s? }
 export function conn_config(o)
 {
@@ -116,7 +116,8 @@ export function conn_config(o)
 	c.proposals = o.proposals ?? [ 'aes256-sha512-modp4096', 'default' ];
 	if (o.esp_proposals)
 		c.children.ims.esp_proposals = o.esp_proposals;
-	return { [CONN]: c };
+	// a line's own connection name (several lines: wwand-vowifi<i>)
+	return { [o.conn ?? CONN]: c };
 }
 
 // a P-CSCF address from one of charon's log lines (p-cscf plugin)
@@ -126,10 +127,10 @@ export function pcscf_from_log(msg)
 	return m ? m[1] : null;
 }
 
-// our virtual IPs from a list-sa event of CONN: { v4, v6 } (null when none)
-export function vips_of(listsa)
+// our virtual IPs from a list-sa event of the connection: { v4, v6 } (null when none)
+export function vips_of(listsa, conn)
 {
-	let sa = listsa?.[CONN];
+	let sa = listsa?.[conn ?? CONN];
 	let out = { v4: null, v6: null, state: sa?.state ?? null, remote: sa?.['remote-host'] ?? null };
 	for (let a in sa?.['local-vips'] ?? []) {
 		if (index(a, ':') >= 0)

@@ -155,19 +155,26 @@ return view.extend({
 		o.password = true;
 		o.rmempty = false;
 
-		o = s.option(form.Value, 'modem', _('Modem'));
-		modems.forEach(function(n) { o.value(n); });
+		o = s.option(form.ListValue, 'line', _('IMS line'),
+			_('The line (IMS modem) this phone or trunk uses: it registers at that line\'s SIP port. Default: the first line.'));
+		o.value('', _('first line'));
+		uci.sections('wwand_ims', 'ims_modem').forEach(function(l, i) {
+			o.value(l['.name'], '%s (%s)'.format(l['.name'], l.modem || '?'));
+		});
 		o.rmempty = true;
 
-		/* ---- the modem ------------------------------------------------------ */
-		s = m.section(form.TypedSection, 'ims_modem', _('IMS modem'),
-			_('The modem whose SIM and IMS connection carry the calls.'));
-		s.anonymous = true;
+		/* ---- the IMS lines: one per modem ----------------------------------- */
+		s = m.section(form.TypedSection, 'ims_modem', _('IMS lines'),
+			_('One IMS line per modem: its SIM and IMS connection carry the calls of the phones assigned to it. Each line runs its own instance of sipd with its own SIP port for the phones (the first one the gateway\'s port, then one more per line), VRF, tunnel and RTP ports. Run `wwandctl ims <modem> setup` for each.'));
+		s.anonymous = false;
 		s.addremove = true;
 
-		o = s.option(form.Value, 'modem', _('Modem'), _('The wwand_modem section in /etc/config/network.'));
+		o = s.option(form.Value, 'modem', _('Modem'), _('The wwand_modem section in /etc/config/network. Empty for a SIM card in a reader (below).'));
 		modems.forEach(function(n) { o.value(n); });
-		o.rmempty = false;
+
+		o = s.option(form.Value, 'card', _('SIM card without a modem'),
+			_('VoWiFi only, with the SIM in a card reader instead of a modem: a reader of wwand-rsim\'s rsim-card, for example pcsc:0, or ssh:root@host:wwand:wwmodem0 for the card of a modem on another router. Needs backend Router IMS UE; no IMS PDN, no SMS.'));
+		o.placeholder = 'pcsc:0';
 
 		o = s.option(form.ListValue, 'backend', _('Backend'),
 			_('Router IMS UE: the router registers itself, with the modem\'s SIM; it needs the IMS PDN as its own interface in a VRF. Modem IMS: the modem\'s own VoLTE, driven over QMI.'));
@@ -242,12 +249,46 @@ return view.extend({
 		o.depends('backend', 'ue');
 		o.rmempty = true;
 
+		o = numeric(s.option(form.Value, 'sip_port', _('SIP port for the phones'),
+			_('Default: the gateway\'s port for the first line, one more for each further line.')), 1);
 		o = numeric(s.option(form.Value, 'rtp_base', _('RTP port base')), 1024);
-		o.placeholder = '40000';
+		o.placeholder = _('40000 + 200 per line');
 		o.depends('backend', 'ue');
 		o = numeric(s.option(form.Value, 'rtp_span', _('RTP ports')), 2);
 		o.placeholder = '200';
 		o.depends('backend', 'ue');
+
+		/* ---- per SIM: overrides by ICCID -------------------------------- */
+		s = m.section(form.TypedSection, 'ims_sim', _('SIM cards'),
+			_('Settings of one SIM card, matched by its ICCID (or a prefix), over those of the line it is in: a card may use VoWiFi where another one in the same modem uses the IMS PDN. A line starts again by itself when its modem gets another card.'));
+		s.anonymous = false;
+		s.addremove = true;
+
+		o = s.option(form.Value, 'label', _('Label'));
+		o.rmempty = true;
+		o = s.option(form.DynamicList, 'iccid', _('ICCID'), _('The card\'s ICCID, or a prefix of it; the longest match wins.'));
+		o.datatype = 'and(minlength(4),maxlength(22))';
+		o.rmempty = false;
+		o = s.option(form.ListValue, 'access', _('IMS access'));
+		o.value('', _('as the line'));
+		o.value('pdn', _('IMS PDN'));
+		o.value('vowifi', _('VoWiFi (ePDG)'));
+		o.rmempty = true;
+		o = s.option(form.ListValue, 'profile', _('Operator profile'));
+		o.value('', _('as the line'));
+		uci.sections('wwand_ims', 'ims_profile').forEach(function(p) {
+			o.value(p['.name'], p.label ? '%s (%s)'.format(p.label, p['.name']) : p['.name']);
+		});
+		o.rmempty = true;
+		o = s.option(form.ListValue, 'smsip', _('SMS over IMS'));
+		o.value('', _('as the line'));
+		o.value('1', _('on'));
+		o.value('0', _('off'));
+		o.rmempty = true;
+		o = s.option(form.Value, 'epdg', _('ePDG'));
+		o.datatype = 'host';
+		o.rmempty = true;
+		o.depends('access', 'vowifi');
 
 		/* ---- operator profiles --------------------------------------------- */
 		s = m.section(form.TypedSection, 'ims_profile', _('Operator profiles'),
