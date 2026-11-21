@@ -34,6 +34,14 @@ project(wwand-ims NONE)
 option(UCODE_PRECOMPILE "Precompile the ucode modules and programs to bytecode" ON)
 find_program(UCODE_COMPILER ucode DOC "ucode interpreter used as bytecode compiler")
 
+# the charon plugins of wwand-ims-vowifi (src/strongswan: ext-aka, epdg-idr),
+# out of strongSwan's tree against its headers (STRONGSWAN_INCLUDE_DIR,
+# STRONGSWAN_LIB_DIR); the feed build turns it on, the host tests do not
+option(STRONGSWAN_PLUGINS "Build the strongSwan plugins in src/strongswan" OFF)
+if(STRONGSWAN_PLUGINS)
+	add_subdirectory(src/strongswan)
+endif()
+
 set(SRC ${CMAKE_CURRENT_SOURCE_DIR})
 set(OUT ${CMAKE_BINARY_DIR}/ucode)
 

@@ -349,7 +349,8 @@ Open for a router:
   IKE_AUTH answer is N(10500) NETWORK_FAILURE + N(41041) BACKOFF_TIMER; with
   IDr `ims` EAP-AKA succeeds and the ePDG assigns an IPv6 address and two
   P-CSCFs, then answers IDr = its FQDN, which charon refuses (it requires
-  the IDr it sent). The feed's strongSwan plugin `epdg-idr` lets charon
+  the IDr it sent). The strongSwan plugin `epdg-idr` (this repo's `src/strongswan`, built
+  out of strongSwan's tree) lets charon
   accept it (`docs/strongswan-idr.md`); the IMS APN is now sent as IDr by
   default, for every operator. With it Vodafone registers over VoWiFi
   (sec-agree `hmac-sha-1-96` + `aes-cbc`, which needed the EIP-93

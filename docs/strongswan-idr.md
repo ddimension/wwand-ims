@@ -1,6 +1,6 @@
 # Proposal: send the APN as IDr, accept the ePDG's own identity (strongSwan)
 
-Status: option A built (feed strongswan patch 1001, `strongswan-mod-epdg-idr`) and HW-tested with Vodafone DE on the NR7101, 2026-11-21. Option B is still only a proposal. The plugin relaxes the identity for the lifetime of the peer config only: putting it back once the IKE_SA was up crashed charon, see the comment in the plugin.
+Status: option A built (`src/strongswan/epdg_idr` in this repo, built out of strongSwan's tree; the feed packages it as `strongswan-mod-epdg-idr` — a patch to the feed's strongswan, 1001, until 6.0.7-r118) and HW-tested with Vodafone DE on the NR7101, 2026-11-21. Option B is still only a proposal. The plugin relaxes the identity for the lifetime of the peer config only: putting it back once the IKE_SA was up crashed charon, see the comment in the plugin.
 
 ## The problem
 
@@ -44,8 +44,8 @@ over the MSK), not by its identity: accepting its own IDr loses nothing.
 
 ## Option A (preferred): a plugin, `epdg-idr`, no change to charon itself
 
-A listener plugin in the feed's strongswan package, next to `ext-aka`
-(patch 1000 adds that one the same way).
+A listener plugin next to `ext-aka`, both in this repo's `src/strongswan`
+and built against the feed strongswan's headers (its `Build/InstallDev`).
 
 - Setting: `charon.plugins.epdg-idr.connections = wwand-vowifi` (a list of
   connection names), shipped in the existing
