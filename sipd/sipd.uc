@@ -296,14 +296,19 @@ if (backend == 'ue' && access == 'vowifi') {
 	vowifi = CTL.create({ vici: vici, uloop: uloop, log: log,
 		run: (argv) => system(argv),
 		// deferred: the proto handler asks sipd (vowifi_addr) back right away
-		notify: () => bus.defer(sprintf('network.interface.%s', vw_iface), 'renew', {},
-			(rc) => rc ? log('warn', sprintf('vowifi: netifd renew %s: %s', vw_iface, ubus.error() ?? rc)) : null),
+		// ... and the line checks its way at once (a fallback, or back)
+		notify: () => {
+			bus.defer(sprintf('network.interface.%s', vw_iface), 'renew', {},
+				(rc) => rc ? log('warn', sprintf('vowifi: netifd renew %s: %s', vw_iface, ubus.error() ?? rc)) : null);
+			uloop.timer(500, () => line?.kick());
+		},
 		imsi: m.imsi, mnc_len: im.mnc_len ? +im.mnc_len : (m.mnc_len ?? LINE.home_mnc_len(m)),
 		if_id: RES.vowifi_if_id, dev: RES.vowifi_dev, conn: RES.vowifi_conn,
 		epdg: im.epdg ?? p.vowifi_epdg, apn: opt('vowifi_apn'),
 		proposals: lst('vowifi_proposals'), esp_proposals: lst('vowifi_esp_proposals'),
 		remote_auth: opt('vowifi_remote_auth'), pani: opt('vowifi_pani'),
 		rekey_s: num_opt('vowifi_rekey_s'), esp_rekey_s: num_opt('vowifi_esp_rekey_s'), dpd_s: num_opt('vowifi_dpd_s'),
+		mobike: (opt('vowifi_mobike') == '1' || opt('vowifi_mobike') == 'yes'),
 		// charon's detail for the tunnel's setup, 0-4 (2: every IKE step)
 		loglevel: im.vowifi_loglevel != null ? +im.vowifi_loglevel : 1 });
 	// the UE registers once netifd has the tunnel's address and route
@@ -639,6 +644,12 @@ if (line) {
 	};
 	if (vowifi)
 		tunnel_up();
+	// the IMS PDN up or down (netifd): the line checks its way at once
+	if (index(ways, 'pdn') >= 0)
+		bus.listener('network.interface', (type, data) => {
+			if (data?.interface == RES.ims_iface && (data?.action == 'ifup' || data?.action == 'ifdown' || data?.action == 'ifupdate'))
+				uloop.timer(500, () => line?.kick());
+		});
 	// a card without a modem: the tunnel once the card is read (its IMSI
 	// names the tunnel's identity, its ICCID picks the ims_sim); a card that
 	// does not answer ends the instance, procd tries again

@@ -276,8 +276,29 @@ export function create(o)
 	// registers over the first that works (ims_modem option access)
 	let started_at = time(), ever_reg = false;
 	let ways = o.ways ?? (o.access ? [ 'vowifi' ] : [ 'pdn' ]);
+	// a way that looks up but where REGISTER keeps failing (the tunnel up,
+	// the P-CSCF silent): after a round over its P-CSCFs (2 at least) it is
+	// set aside for o.demote_s (300 s) and the next way taken
+	let way_fails = {}, demoted = {};
+	let usable = (w) => !(demoted[w] > time()) ||
+		length(filter(ways, (x) => !(demoted[x] > time()))) == 0;
+	let way_failed = (w, n_pcscf) => {
+		if (length(ways) < 2 || !w)
+			return false;
+		way_fails[w] = (way_fails[w] ?? 0) + 1;
+		if (way_fails[w] < ((n_pcscf > 2) ? n_pcscf : 2))
+			return false;
+		way_fails[w] = 0;
+		demoted[w] = time() + (o.demote_s ?? 300);
+		log('warn', sprintf('ue: REGISTER keeps failing over %s; the next way for %d s', w, o.demote_s ?? 300));
+		return true;
+	};
 	let discover_way = (way, light) => {
 		let st = bus.call('wwand', 'status', {});
+		// wwand did not answer (busy, restarting): nothing known about any
+		// way — not a way that went away (the watch keeps the registration)
+		if (st == null && !o.sim_info)
+			return { error: 'wwand does not answer', transient: true };
 		// a card without a modem (ue/reader.uc): its identity from the card
 		let m = o.sim_info ? o.sim_info() : st?.modems?.[o.modem];
 		let fixed = (type(o.pcscf) == 'array') ? o.pcscf : (o.pcscf ? [ o.pcscf ] : []);
@@ -343,6 +364,10 @@ export function create(o)
 	let discover = (light) => {
 		let why = [];
 		for (let w in ways) {
+			if (!usable(w)) {
+				push(why, sprintf('%s: set aside (REGISTER failed)', w));
+				continue;
+			}
 			let e = discover_way(w, light);
 			if (!e.error)
 				return e;
@@ -579,7 +604,7 @@ export function create(o)
 			return;
 		// after the start the preferred way gets o.start_grace_s (60 s) to come
 		// up (the tunnel takes a while) before a fallback way is taken
-		let in_grace = (length(ways) > 1 && !ever_reg && time() - started_at < (o.start_grace_s ?? 60));
+		let in_grace = (length(ways) > 1 && !ever_reg && usable(ways[0]) && time() - started_at < (o.start_grace_s ?? 60));
 		let env = in_grace ? discover_way(ways[0]) : discover();
 		if (env.error && in_grace) {
 			self.state = 'down';
@@ -609,6 +634,11 @@ export function create(o)
 					pcscf_ix = (pcscf_ix + 1) % n;
 				let wait = (fails == 0 || (moved && fails < n)) ? 5000 : retry;
 				fails++;
+				// this way failed often enough: the next one, at once
+				if (way_failed(env.way, n)) {
+					wait = 1000;
+					moved = false;
+				}
 				log('warn', sprintf('ue: registration failed: %J; again in %d s%s', err, wait / 1000,
 					moved ? sprintf(' via P-CSCF %s', pcscf_pick(env.pcscfs, pcscf_ix)) : ''));
 				// the kernel refused the sec-agree SAs (EINVAL: a crypto
@@ -623,6 +653,7 @@ export function create(o)
 				return set_timer('reg', wait, register);
 			}
 			fails = 0;
+			way_fails[env.way] = 0;
 			let old = cur;
 			cur = r;
 			self.state = 'registered';
@@ -746,6 +777,8 @@ export function create(o)
 			return;
 		let way = cur.env.way ?? ways[0];
 		let env = discover_way(way, true);
+		if (env.transient)
+			return;
 		// the P-CSCF in use no longer among the PDN's counts as a change;
 		// register() then takes the next way that works (the fallback)
 		if (env.error || env.ue_addr != cur.env.ue_addr || index(env.pcscfs, cur.env.pcscf) < 0) {
@@ -763,7 +796,7 @@ export function create(o)
 		for (let w in ways) {
 			if (w == way)
 				break;
-			if (!discover_way(w, true).error) {
+			if (usable(w) && !discover_way(w, true).error) {
 				better = w;
 				break;
 			}
@@ -907,6 +940,15 @@ export function create(o)
 
 	// the VRF of the way in use (the relay's IMS side follows it)
 	self.vrf = () => cur?.env?.vrf;
+
+	// a way changed (the tunnel up or down, the IMS PDN up or down: sipd's
+	// events): check now instead of at the next 20 s watch
+	self.kick = function() {
+		if (self.state == 'registered')
+			return watch();
+		if (self.state == 'down')
+			set_timer('reg', 0, register);
+	};
 
 	// register now instead of at the next retry: the access came up
 	// (sipd, once the VoWiFi tunnel stands)

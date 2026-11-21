@@ -100,8 +100,10 @@ export function options(x)
 		o.vowifi_rekey_s = x.ike_rekey_s;
 	if (x.esp_rekey_s && +x.esp_rekey_s > 0)
 		o.vowifi_esp_rekey_s = x.esp_rekey_s;
-	if (x.dpd == 'FALSE')
-		o.vowifi_dpd_s = '0';
+	// liveness_check_enabled FALSE is not taken over: a phone saves its
+	// battery with it, a router has none to save, and DPD is the quick sign
+	// of a tunnel that died quietly (the fallback to the IMS PDN waits for
+	// it); vowifi_dpd_s '0' set by hand still turns it off
 	if (x.peer_id)
 		o.vowifi_apn = x.peer_id;
 	if (x.static_fqdn)

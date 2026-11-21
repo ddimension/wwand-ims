@@ -454,7 +454,27 @@ relay's IMS side follows its VRF. The move back waits for a call in progress
 to end (the watch skips while one runs); a call on a way that fails ends
 with it (no handover). After a start the preferred way gets
 `start_grace_s` (60 s) before a fallback is taken, so a start does not
-register over the PDN only because the tunnel is still coming up. The tunnel is kept up while the PDN carries the registration (the
+register over the PDN only because the tunnel is still coming up.
+
+Faster detection (HW NR7101, Telekom, everything to and from the ePDG
+dropped): a quiet outage reached VoLTE after 180 s with charon's defaults,
+36 s now — DPD 20 s by default (the carrier config's
+liveness_check_enabled FALSE is no longer imported: a router has no battery
+to save), IKE retransmissions ~26 s (`files/vowifi-strongswan-ike.conf`,
+top level of strongswan.conf; the plugin file is read inside
+charon.plugins and cannot carry them). The switch itself follows events:
+the VoWiFi controller's up/down and netifd's ifup/ifdown of the IMS PDN
+kick the line (`kick()`), registered over the other way ~1 s later. A
+way that looks up but whose REGISTERs fail (a round over its P-CSCFs, 2 at
+least) is set aside for `demote_s` (300 s). A failed `wwand status` call
+is not a lost way. MOBIKE stays off unless a profile sets vowifi_mobike.
+
+Known: sipd can end with SIGSEGV in libucode's ucv_put() as the VM is torn
+down after a stop (NR7101, ucode 2026.07.09~b885dd0f, mapped with a
+rebuild of that libucode: types.c ucv_put_value). Everything before it
+(de-REGISTER, SAs, tunnel) is done by then. Upstream ucode fixed the ubus
+module's connection teardown (use-after-free, PR #447, Oct 2026) after that
+version; the next OpenWrt ucode update should end it. TODO: check then. The tunnel is kept up while the PDN carries the registration (the
 controller's own retries).
 
 ### 5.11 VoWiFi without a modem (2026-11-21)

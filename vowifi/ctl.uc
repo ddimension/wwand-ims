@@ -208,7 +208,7 @@ export function create(o)
 		});
 		vici.request('load-conn', TUN.conn_config({ imsi: o.imsi, plmn: plmn, conn: CONN, if_id: o.if_id, epdg: o.epdg,
 			apn: o.apn, proposals: o.proposals, esp_proposals: o.esp_proposals, remote_auth: o.remote_auth,
-			rekey_s: o.rekey_s, esp_rekey_s: o.esp_rekey_s, dpd_s: o.dpd_s }),
+			rekey_s: o.rekey_s, esp_rekey_s: o.esp_rekey_s, dpd_s: o.dpd_s, mobike: o.mobike }),
 			(err, res) => {
 				if (err || res?.success != 'yes')
 					return done({ error: 'load-conn', detail: err?.detail ?? res?.errmsg ?? 'refused' });

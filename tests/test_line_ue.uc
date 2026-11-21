@@ -180,6 +180,31 @@ ok(!length(nb.registers()) && length(filter(nb.logs, (l) => index(l, 'vowifi: ')
 	'fallback: neither works -> no REGISTER, both reasons logged');
 fb.line.stop(); tb.line.stop(); nb.line.stop();
 
+// the tunnel up but its P-CSCF silent: after two failed REGISTERs VoWiFi is
+// set aside and the IMS PDN taken, at once
+let db = world({});
+db.line = LINE.create({ bus: db.bus, uloop: db.uloop, socket: db.socket, xfrm: db.xfrm, modem: 'm0', start_grace_s: 0,
+	iface: 'wwims', vrf: 'ims', ways: [ 'vowifi', 'pdn' ], access: () => tunnel, log: (l, m) => push(db.logs, m) });
+db.line.start();
+db.advance(32000 + 5000 + 32000 + 1000 + 500);
+rs = db.registers();
+eq(map(rs, (r) => r.dst.address), [ VP, VP, P1 ], 'demotion: two silent REGISTERs over VoWiFi, then the IMS PDN');
+ok(length(filter(db.logs, (l) => index(l, 'keeps failing over vowifi') >= 0)) == 1, 'demotion: logged once');
+db.line.stop();
+
+// kick: down and the way comes up -> a REGISTER now, not at the retry time
+let kt = null;
+let kb = world({});
+kb.line = LINE.create({ bus: kb.bus, uloop: kb.uloop, socket: kb.socket, xfrm: kb.xfrm, modem: 'm0',
+	iface: 'wwims', vrf: 'ims', ways: [ 'vowifi' ], access: () => kt });
+kb.line.start();
+eq(length(kb.registers()), 0, 'kick: no tunnel, no REGISTER');
+kt = tunnel;
+kb.line.kick();
+kb.advance(100);
+eq(length(kb.registers()), 1, 'kick: the tunnel up -> REGISTER at once');
+kb.line.stop();
+
 // stop while down: nothing left running
 w.line.stop();
 let n = length(w.sent);

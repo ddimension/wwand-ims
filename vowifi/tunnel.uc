@@ -55,7 +55,7 @@ export function nai(imsi, plmn)
 
 // The vici load-conn message (strongSwan's swanctl.conf keys, as a tree).
 // o: { imsi, plmn, conn?, epdg?, apn?, if_id, proposals?, esp_proposals?, remote_auth?,
-//      rekey_s?, esp_rekey_s?, dpd_s? }
+//      rekey_s?, esp_rekey_s?, dpd_s?, mobike? }
 export function conn_config(o)
 {
 	let id = nai(o.imsi, o.plmn);
@@ -67,10 +67,15 @@ export function conn_config(o)
 		if_id_in: sprintf('%d', o.if_id),
 		if_id_out: sprintf('%d', o.if_id),
 		encap: 'yes',
-		mobike: 'no',
-		// from the carrier config's iwlan settings where it has them
-		// (vowifi_dpd_s, vowifi_rekey_s), else no rekeying (Telekom DE)
-		dpd_delay: sprintf('%ds', o.dpd_s ?? 60),
+		// MOBIKE (RFC 4555): the tunnel follows a new uplink address instead
+		// of going down; off unless a profile turns it on (vowifi_mobike), an
+		// ePDG that does not do it is not tested
+		mobike: o.mobike ? 'yes' : 'no',
+		// dead peer detection: 20 s by default, so a tunnel that died quietly
+		// is found within ~50 s (with the retransmissions of
+		// files/vowifi-strongswan-ike.conf) and the line takes its fallback;
+		// vowifi_dpd_s sets it (0: off). No rekeying unless asked (Telekom DE)
+		dpd_delay: sprintf('%ds', o.dpd_s ?? 20),
 		rekey_time: sprintf('%ds', o.rekey_s ?? 0),
 		unique: 'replace',
 		send_certreq: 'no',
