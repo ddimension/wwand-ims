@@ -14,6 +14,11 @@ ok(length(dv) == 2 && dv[1][0] == 'sh' && index(dv[1][2], 'ip -6 -o addr show to
 	index(dv[1][2], '[ "$dev" = imswifi0 ] ||') >= 0, 'drop_charon_vip_cmds: charon\'s copy elsewhere goes, ours stays');
 eq(CTL.drop_charon_vip_cmds(O, '10.0.0.1; reboot', 'x;y'), [], 'drop_charon_vip_cmds: nothing of an unexpected shape into a shell');
 
+eq(CTL.net_specs({ dev: 'imswifi0', iface: 'wwvowifi', if_id: 7001 }), [
+	{ name: 'imswifi0', proto: 'xfrm', ifid: 7001, mtu: 1280, zone: 'ims' },
+	{ name: 'wwvowifi', proto: 'wwandvowifi', device: '@imswifi0', ip4table: '31', ip6table: '31', peerdns: false, delegate: false } ],
+	'net_specs: the XFRM interface into the ims zone, the address interface on its alias, table 31');
+
 // charon's log to syslog
 let L = (group, level, msg, name) => ({ group: group, level: sprintf('%d', level), msg: msg, 'ikesa-name': name ?? TUN.CONN });
 eq(CTL.log_line(L('IKE', 1, 'IKE_SA wwand-vowifi[3] established')), { level: 'info', msg: 'charon: IKE_SA wwand-vowifi[3] established' },

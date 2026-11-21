@@ -189,6 +189,8 @@ const UE_EVENT = 'wwand.ims.ue';
 // ---- the UE line (backend 'ue') -------------------------------------------------------------
 
 let core = null, line = null, relay = null, vowifi = null;
+// the VoWiFi tunnel's netifd interfaces, created at run time: { ensure, remove }
+let vowifi_net = null;
 // the kernel crypto check (ue/kcrypto.uc), backend ue
 let kc_opts = null;
 
@@ -244,6 +246,38 @@ if (backend == 'ue' && access == 'vowifi') {
 	// (its ifup / ifupdate of the interface), not at its next retry and not
 	// before: an earlier REGISTER finds no route ("Network unreachable")
 	vowifi.iface = vw_iface;
+
+	// its two netifd interfaces, created at run time (network add_dynamic)
+	// with the XFRM interface in the IMS firewall zone, gone again when sipd
+	// stops; netifd forgets dynamic interfaces on a restart, so ensure()
+	// runs again on sipd's tick. A section of that name in
+	// /etc/config/network (an older `wwandctl ims setup` wrote them) is used
+	// as it is.
+	let specs = CTL.net_specs({ dev: im.vowifi_dev ?? 'imswifi0', iface: vw_iface,
+		if_id: im.vowifi_if_id ?? 7001, mtu: im.vowifi_mtu ?? 1280, table: im.vowifi_table ?? 31,
+		zone: im.vowifi_zone ?? 'ims' });
+	let is_static = (name) => cur.get('network', name) == 'interface';
+	vowifi_net = {
+		ensure: () => {
+			for (let s in specs) {
+				if (is_static(s.name) || bus.call(sprintf('network.interface.%s', s.name), 'status', {}) != null)
+					continue;
+				// add_dynamic answers without data: null is success as well,
+				// ubus.error() tells
+				bus.call('network', 'add_dynamic', s);
+				let e = ubus.error();
+				if (e != null && !match(e, /^Success/i))
+					log('warn', sprintf('vowifi: netifd add_dynamic %s: %s', s.name, e));
+				else
+					log('info', sprintf('vowifi: netifd interface %s (%s) created', s.name, s.proto));
+			}
+		},
+		remove: () => {
+			for (let i = length(specs) - 1; i >= 0; i--)
+				if (!is_static(specs[i].name))
+					bus.call(sprintf('network.interface.%s', specs[i].name), 'remove', {});
+		},
+	};
 }
 
 if (backend == 'ue') {
@@ -478,12 +512,13 @@ let emit_ue_status = (state) => {
 
 if (line) {
 	let ue_tick;
-	ue_tick = () => { emit_ue_status(); uloop.timer(5000, ue_tick); };
+	ue_tick = () => { emit_ue_status(); vowifi_net?.ensure(); uloop.timer(5000, ue_tick); };
 	// over VoWiFi the tunnel first: the controller keeps it up from here
 	// on, the line registers when netifd has its address (or retries)
 	if (vowifi) {
 		// after the crypto check (a faulty driver module unloaded first)
-		kc_opts ? kc_opts.settle(() => vowifi.start(null)) : vowifi.start(null);
+		let go = () => { vowifi_net.ensure(); vowifi.start(null); };
+		kc_opts ? kc_opts.settle(go) : go();
 		bus.listener('network.interface', (type, data) => {
 			if (data?.interface == vowifi.iface && (data?.action == 'ifup' || data?.action == 'ifupdate') && vowifi.access())
 				line?.retry_now();
@@ -506,7 +541,7 @@ let stop = () => {
 	if (!line)
 		return uloop.end();
 	uloop.timer(5000, () => uloop.end());
-	line.stop(() => vowifi ? vowifi.stop(() => uloop.end()) : uloop.end());
+	line.stop(() => vowifi ? vowifi.stop(() => { vowifi_net?.remove(); uloop.end(); }) : uloop.end());
 };
 signal('SIGTERM', stop);
 signal('SIGINT', stop);

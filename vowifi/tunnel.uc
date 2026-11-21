@@ -100,8 +100,13 @@ export function conn_config(o)
 				remote_ts: [ '0.0.0.0/0', '::/0' ],
 				mode: 'tunnel',
 				rekey_time: sprintf('%ds', o.esp_rekey_s ?? 0),
-				dpd_action: 'restart',
-				close_action: 'restart',
+				// the controller (vowifi/ctl.uc) brings the tunnel back, not
+				// charon: it loads the connection anew first, and only then the
+				// IDr goes out again (a peer config the epdg-idr plugin relaxed
+				// sends none, which Vodafone DE refuses); a restart of charon's
+				// own also left the controller with the old addresses
+				dpd_action: 'clear',
+				close_action: 'none',
 			},
 		},
 	};

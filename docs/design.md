@@ -288,8 +288,16 @@ Open for a router:
   the IPv6-only tunnel was dead that way (HW 2026-11-21). The UE's and the
   relay's sockets bind to `imswifi0` and the inner address instead; the
   table and the rules keep the traffic in the tunnel.
-  `wwandctl ims setup` writes these sections, and run again later it adds
-  what is missing (list entries without --force). EAP-AKA runs on the modem's USIM: ext-aka execs
+  The two interfaces are netifd's dynamic ones since 2026-11-21: sipd
+  creates them (`network add_dynamic`, vowifi/ctl.uc net_specs) with the
+  XFRM interface's `zone ims` in its data, which firewall4 (2025.03.17)
+  takes into the zone at ifup (HW: input/forward/output chains), and
+  removes them when it stops; after a netifd restart (which forgets dynamic
+  interfaces) sipd's 5 s tick creates them again (HW: ~5 s, registered
+  again ~35 s later). `setup` writes neither them nor zone entries. The
+  child's dpd_action is `clear`, close_action `none`: the controller, not
+  charon, brings the tunnel back, loading the connection anew first (the
+  IDr goes out again then). EAP-AKA runs on the modem's USIM: ext-aka execs
   `/usr/libexec/strongswan/ext-aka`, `vowifi/card.uc` does the AUTHENTICATE
   over wwand's APDU channel. What Telekom's ePDG does: IKE_SA_INIT asks for
   MODP_4096 (AES-CBC-256/HMAC-SHA2-512/PRF-SHA2-512 chosen), NAT-T, the

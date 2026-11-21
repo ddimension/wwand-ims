@@ -68,6 +68,22 @@ export function drop_charon_vip_cmds(o, v4, v6)
 // group of the connection up to that level, as debug — the messages of the
 // tunnel's setup, which `initiate` streams as control-log at that level
 // (vici's global log event stops at level 1, LEVEL_CTRL: vici_logger.c)
+// The tunnel's two netifd interfaces, created at run time (network
+// add_dynamic) rather than written into /etc/config/network: the XFRM
+// interface (OpenWrt's proto xfrm, its zone into the firewall: firewall4
+// takes an interface's `zone` data, HW 2026-11-21) and the one that takes
+// its addresses (proto wwandvowifi on '@<dev>', addresses and routes into
+// the tunnel's table). o: { dev, iface, if_id, mtu, table, zone }
+export function net_specs(o)
+{
+	let t = sprintf('%d', o.table ?? 31);
+	return [
+		{ name: o.dev, proto: 'xfrm', ifid: +(o.if_id ?? 7001), mtu: +(o.mtu ?? 1280), zone: o.zone ?? 'ims' },
+		{ name: o.iface, proto: 'wwandvowifi', device: '@' + o.dev, ip4table: t, ip6table: t,
+		  peerdns: false, delegate: false },
+	];
+}
+
 export function log_line(m, detail)
 {
 	if (m?.['ikesa-name'] != TUN.CONN && m?.['ikesa-name'] != null || m?.msg == null)
@@ -233,7 +249,8 @@ export function create(o)
 			vici.listen('log', (m) => {
 				if (m?.['ikesa-name'] != TUN.CONN)
 					return;
-				let p = TUN.pcscf_from_log(m?.msg);
+				// the P-CSCFs of our own attempt only
+				let p = busy ? TUN.pcscf_from_log(m?.msg) : null;
 				if (p && index(st.pcscf, p) < 0)
 					push(st.pcscf, p);
 				// while an initiate streams its own (control-log), not twice

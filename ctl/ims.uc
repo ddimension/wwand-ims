@@ -148,34 +148,22 @@ function setup_sections(o)
 	let ifc = o.iface ?? 'wwims', vrf = o.vrf ?? 'ims', table = sprintf('%d', o.table ?? 30);
 	let rtp = o.rtp ?? RTP_PORTS;
 	let p = o.profile;
+	// zone: netifd hands it to firewall4 with the interface's data (no
+	// network list in the zone to keep up; HW 2026-11-21)
 	let net = { proto: 'wwand', modem: o.modem, device: ifc, mux_id: 'auto', apn: p.apn,
-	            ims: '1', ip4table: table, ip6table: table, peerdns: '0', delegate: '0' };
+	            ims: '1', ip4table: table, ip6table: table, peerdns: '0', delegate: '0', zone: vrf };
 	let pdp = pdp_option(p.pdp_type);
 	if (pdp)
 		net.pdp_type = pdp;
 	if (p.index != null)
 		net.profile = sprintf('%d', p.index);
 
-	// VoWiFi (wwand-ims-vowifi, o.vowifi): the tunnel's VRF and its netifd
-	// interface (proto wwandvowifi: netifd puts the inner address, the route
-	// and the `from` rules into the VRF table, as for the IMS PDN), in the
-	// same firewall zone — without it the replies to the UE's protected
-	// ports are rejected (HW 2026-11-21)
+	// VoWiFi (wwand-ims-vowifi, o.vowifi): its netifd interfaces are sipd's,
+	// created at run time with the XFRM interface in this zone (vowifi/ctl.uc
+	// net_specs, firewall4 takes an interface's zone data): nothing here but
+	// the operator profile below
 	let vw = o.vowifi;
-	let zone_net = vw ? [ ifc, vw.dev, vw.iface ] : [ ifc ];
 	let zone_dev = [ vrf ];
-	// the XFRM interface itself is netifd's too: OpenWrt's proto xfrm
-	// (package xfrm) creates it with the tunnel's if_id and the MTU; the
-	// addresses go onto it through the alias '@<dev>'. No VRF: netifd 25.12
-	// turns IPv6 off on a VRF port it cannot be told otherwise for (see
-	// vowifi/ctl.uc access()); the table and netifd's rules isolate it.
-	let vowifi = vw ? [
-		{ config: 'network', name: vw.dev, type: 'interface',
-		  opts: { proto: 'xfrm', ifid: sprintf('%d', vw.if_id), mtu: sprintf('%d', vw.mtu) } },
-		{ config: 'network', name: vw.iface, type: 'interface',
-		  opts: { proto: 'wwandvowifi', device: '@' + vw.dev, ip4table: sprintf('%d', vw.table),
-		          ip6table: sprintf('%d', vw.table), peerdns: '0', delegate: '0' } },
-	] : [];
 
 	// the SIM's operator profile with the VoWiFi settings of the carrier
 	// config (only what is missing is added: a value set there wins)
@@ -190,10 +178,9 @@ function setup_sections(o)
 		  opts: { type: 'vrf', name: vrf, table: table }, lists: { ports: [ ifc ] } },
 		{ config: 'network', name: vrf + '_vrf', type: 'interface', opts: { proto: 'none', device: vrf } },
 		{ config: 'network', name: ifc, type: 'interface', opts: net },
-		...vowifi,
 		{ config: 'firewall', name: vrf, type: 'zone',
 		  opts: { name: vrf, input: 'REJECT', output: 'ACCEPT', forward: 'REJECT' },
-		  lists: { network: zone_net, device: zone_dev } },
+		  lists: { device: zone_dev } },
 		{ config: 'firewall', name: vrf + '_esp', type: 'rule',
 		  opts: { name: 'IMS-ESP', src: vrf, proto: 'esp', target: 'ACCEPT' } },
 		{ config: 'firewall', name: vrf + '_sip', type: 'rule',
