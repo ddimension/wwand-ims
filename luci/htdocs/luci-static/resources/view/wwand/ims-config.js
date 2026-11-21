@@ -183,9 +183,11 @@ return view.extend({
 		o.default = 'qmi';
 
 		o = s.option(form.ListValue, 'access', _('IMS access'),
-			_('IMS PDN: over the modem\'s IMS connection. VoWiFi: through an IKEv2 tunnel to the operator\'s ePDG over the router\'s internet connection (package wwand-ims-vowifi).'));
+			_('IMS PDN: over the modem\'s IMS connection. VoWiFi: through an IKEv2 tunnel to the operator\'s ePDG over the router\'s internet connection (package wwand-ims-vowifi). Both: the first one, the other while it does not work (back after a minute of working again); a running call ends at the switch.'));
 		o.value('pdn', _('IMS PDN'));
 		o.value('vowifi', _('VoWiFi (ePDG)'));
+		o.value('vowifi pdn', _('VoWiFi, IMS PDN as fallback'));
+		o.value('pdn vowifi', _('IMS PDN, VoWiFi as fallback'));
 		o.default = 'pdn';
 		o.depends('backend', 'ue');
 
@@ -193,7 +195,7 @@ return view.extend({
 			_('Default: epdg.epc.mnc<MNC>.mcc<MCC>.pub.3gppnetwork.org from the SIM.'));
 		o.datatype = 'host';
 		o.rmempty = true;
-		o.depends('access', 'vowifi');
+		o.depends({ access: /vowifi/ });
 
 		o = s.option(form.ListValue, 'vowifi_loglevel', _('Tunnel log detail'),
 			_('How much of the tunnel setup (IKEv2, EAP-AKA) strongSwan reports to the system log. 2 shows every IKE step; for debugging.'));
@@ -203,7 +205,7 @@ return view.extend({
 		o.value('3', _('Raw (3)'));
 		o.value('4', _('With keys (4) — never in normal operation'));
 		o.rmempty = true;
-		o.depends('access', 'vowifi');
+		o.depends({ access: /vowifi/ });
 
 		o = s.option(widgets.NetworkSelect, 'ims_iface', _('IMS interface'),
 			_('The interface (proto wwand) of the IMS PDN.'));
@@ -273,6 +275,8 @@ return view.extend({
 		o.value('', _('as the line'));
 		o.value('pdn', _('IMS PDN'));
 		o.value('vowifi', _('VoWiFi (ePDG)'));
+		o.value('vowifi pdn', _('VoWiFi, IMS PDN as fallback'));
+		o.value('pdn vowifi', _('IMS PDN, VoWiFi as fallback'));
 		o.rmempty = true;
 		o = s.option(form.ListValue, 'profile', _('Operator profile'));
 		o.value('', _('as the line'));
@@ -288,7 +292,7 @@ return view.extend({
 		o = s.option(form.Value, 'epdg', _('ePDG'));
 		o.datatype = 'host';
 		o.rmempty = true;
-		o.depends('access', 'vowifi');
+		o.depends({ access: /vowifi/ });
 
 		/* ---- operator profiles --------------------------------------------- */
 		s = m.section(form.TypedSection, 'ims_profile', _('Operator profiles'),

@@ -118,6 +118,23 @@ export function effective(im, sim)
 	return out;
 }
 
+// the ways into the IMS of a line, in order of preference, from option
+// access: 'pdn', 'vowifi', 'vowifi pdn' / 'pdn vowifi' (a list too), 'auto'
+// (= 'vowifi pdn'); a card without a modem has VoWiFi only
+export function ways(access, card_only)
+{
+	if (card_only)
+		return [ 'vowifi' ];
+	let words = (type(access) == 'array') ? access : split(sprintf('%s', access ?? 'pdn'), /[ ,]+/);
+	let out = [];
+	for (let w in words) {
+		for (let x in ((w == 'auto') ? [ 'vowifi', 'pdn' ] : [ w ]))
+			if ((x == 'vowifi' || x == 'pdn') && index(out, x) < 0)
+				push(out, x);
+	}
+	return length(out) ? out : [ 'pdn' ];
+}
+
 // the extensions of a line: option line names it; without one an extension
 // belongs to the first line
 export function extensions(exts, line_name, line_index)

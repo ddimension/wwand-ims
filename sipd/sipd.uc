@@ -242,7 +242,11 @@ let stop = null;
 // ims_modem option access 'vowifi': the UE's IMS goes through an IKEv2
 // tunnel to the operator's ePDG instead of the IMS PDN (wwand-ims-vowifi,
 // its modules loaded only then)
-let access = CARD ? 'vowifi' : (im?.access ?? 'pdn');
+// ims_modem option access: 'pdn' (default), 'vowifi', or both in order of
+// preference — 'vowifi pdn' (also 'auto'): VoWiFi, the IMS PDN when the
+// tunnel does not work, back to VoWiFi once it works again
+let ways = LINES.ways(im?.access, !!CARD);
+let access = (index(ways, 'vowifi') >= 0) ? 'vowifi' : 'pdn';
 if (CARD && backend != 'ue') {
 	log('error', sprintf('sipd: line %s: a card without a modem needs backend ue', LN?.name ?? '-'));
 	exit(1);
@@ -403,7 +407,7 @@ if (backend == 'ue') {
 			kc_settle(null);
 	};
 	relay = RELAY.create({ socket: socket, uloop: uloop, lan_ip: listen_ip,
-		ims_ip: () => line?.ue_addr(), vrf: () => vowifi ? vowifi.access()?.bind : RES.vrf, log: log,
+		ims_ip: () => line?.ue_addr(), vrf: () => line?.vrf() ?? (vowifi ? vowifi.access()?.bind : RES.vrf), log: log,
 		base: RES.rtp_base, span: RES.rtp_span,
 		rtp_timeout: () => line?.profile()?.rtp_timeout,
 		rtcp_timeout: () => line?.profile()?.rtcp_timeout });
@@ -415,7 +419,7 @@ if (backend == 'ue') {
 		apn: im.ims_apn ?? cur.get('network', RES.ims_iface, 'apn'),
 		mnc_len: im.mnc_len ? +im.mnc_len : null,
 		pcscf: im.pcscf, relay: relay, log: log, trace: trace,
-		access: (vowifi || CARD) ? (() => vowifi?.access()) : null,
+		access: (vowifi || CARD) ? (() => vowifi?.access()) : null, ways: ways,
 		// a card without a modem: the identity read from it, the AKA on it;
 		// the IMEI is not there — +sip.instance a UUID URN of the line's own
 		sim_info: CARD ? (() => card_info ? { ...card_info, instance: card_instance } : null) : null,
@@ -598,7 +602,7 @@ let emit_ue_status = (state) => {
 	let s = (state != null) ? { state: state } : line.status();
 	// how the UE reaches the IMS: VoWiFi (the ePDG tunnel) or VoLTE (the
 	// modem's IMS PDN)
-	s.access = vowifi ? 'vowifi' : 'volte';
+	s.access ??= (ways[0] == 'vowifi') ? 'vowifi' : 'volte';
 	// the VoWiFi tunnel too (wwandctl status shows it in a row of its own)
 	if (vowifi) {
 		let v = vowifi.status();

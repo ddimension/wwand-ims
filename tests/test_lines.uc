@@ -48,4 +48,10 @@ let X = [ { username: 'a' }, { username: 'b', line: 'ue2' }, { username: 'c', li
 eq(map(L.extensions(X, 'ue', 0), (x) => x.username), [ 'a', 'c' ], 'extensions: line 0 takes those without a line');
 eq(map(L.extensions(X, 'ue2', 1), (x) => x.username), [ 'b' ], 'extensions: line 1 only its own');
 
+// the ways into the IMS
+eq([ L.ways(null), L.ways('vowifi'), L.ways('vowifi pdn'), L.ways('auto'), L.ways([ 'pdn', 'vowifi' ]),
+     L.ways('pdn', true), L.ways('nonsense') ],
+	[ [ 'pdn' ], [ 'vowifi' ], [ 'vowifi', 'pdn' ], [ 'vowifi', 'pdn' ], [ 'pdn', 'vowifi' ], [ 'vowifi' ], [ 'pdn' ] ],
+	'ways: the order of preference; a card alone VoWiFi only');
+
 done();

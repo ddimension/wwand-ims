@@ -149,6 +149,37 @@ eq([ length(rs), rs[0].dst.address, rs[1].dst.address, rs[0].dst.port ],
 	[ 2, '2001:db8:ff::99', '2001:db8:ff::99', 5060 ], 'a fixed P-CSCF: no failover, the default port and T1');
 eq(length(filter(f.socks, (s) => s.kind == 1)), 2, 'no profile: the TCP listener as before');
 
+// access 'vowifi pdn': the tunnel first, the IMS PDN while it does not work
+let VP = '2001:db8:ee::7', tunnel = null;
+let fb = world({});
+fb.line = LINE.create({ bus: fb.bus, uloop: fb.uloop, socket: fb.socket, xfrm: fb.xfrm, modem: 'm0',
+	iface: 'wwims', vrf: 'ims', ways: [ 'vowifi', 'pdn' ], access: () => tunnel });
+fb.line.start();
+rs = fb.registers();
+eq(length(rs), 0, 'fallback: right after the start the preferred way gets its grace time');
+fb.line.stop();
+fb = world({});
+fb.line = LINE.create({ bus: fb.bus, uloop: fb.uloop, socket: fb.socket, xfrm: fb.xfrm, modem: 'm0', start_grace_s: 0,
+	iface: 'wwims', vrf: 'ims', ways: [ 'vowifi', 'pdn' ], access: () => tunnel });
+fb.line.start();
+rs = fb.registers();
+eq([ length(rs), rs[0]?.dst?.address ], [ 1, P1 ], 'fallback: the tunnel down (grace over) -> REGISTER over the IMS PDN');
+let tb = world({});
+tunnel = { v6: '2001:db8:ee::2', pcscf: [ VP ], bind: 'wwvowifi', pani: null };
+tb.line = LINE.create({ bus: tb.bus, uloop: tb.uloop, socket: tb.socket, xfrm: tb.xfrm, modem: 'm0',
+	iface: 'wwims', vrf: 'ims', ways: [ 'vowifi', 'pdn' ], access: () => tunnel });
+tb.line.start();
+rs = tb.registers();
+eq([ length(rs), rs[0]?.dst?.address ], [ 1, VP ], 'fallback: the tunnel up -> REGISTER over VoWiFi, preferred');
+let nb = world({});
+nb.bus.call = (obj, method, args) => null;
+nb.line = LINE.create({ bus: nb.bus, uloop: nb.uloop, socket: nb.socket, xfrm: nb.xfrm, modem: 'm0',
+	iface: 'wwims', vrf: 'ims', ways: [ 'vowifi', 'pdn' ], access: () => null, start_grace_s: 0, log: (l, m) => push(nb.logs, m) });
+nb.line.start();
+ok(!length(nb.registers()) && length(filter(nb.logs, (l) => index(l, 'vowifi: ') >= 0 && index(l, 'pdn: ') >= 0)) > 0,
+	'fallback: neither works -> no REGISTER, both reasons logged');
+fb.line.stop(); tb.line.stop(); nb.line.stop();
+
 // stop while down: nothing left running
 w.line.stop();
 let n = length(w.sent);

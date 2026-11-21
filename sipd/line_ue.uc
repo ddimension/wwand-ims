@@ -271,14 +271,21 @@ export function create(o)
 	};
 
 	// light: only what the PDN watch compares (address, P-CSCF), no cell
-	let discover = (light) => {
+	// the ways into the IMS, in order of preference: 'vowifi' (the ePDG
+	// tunnel, o.access) and 'pdn' (the modem's IMS PDN, o.iface); the line
+	// registers over the first that works (ims_modem option access)
+	let started_at = time(), ever_reg = false;
+	let ways = o.ways ?? (o.access ? [ 'vowifi' ] : [ 'pdn' ]);
+	let discover_way = (way, light) => {
 		let st = bus.call('wwand', 'status', {});
 		// a card without a modem (ue/reader.uc): its identity from the card
 		let m = o.sim_info ? o.sim_info() : st?.modems?.[o.modem];
 		let fixed = (type(o.pcscf) == 'array') ? o.pcscf : (o.pcscf ? [ o.pcscf ] : []);
 		let v4, v6 = null, pcscf, acc = null;
 
-		if (o.access) {
+		if (way == 'vowifi') {
+			if (!o.access)
+				return { error: 'no VoWiFi on this line' };
 			// VoWiFi (vowifi/ctl.uc): the tunnel's inner addresses and the
 			// P-CSCFs the ePDG named, in the tunnel's VRF; no IMS PDN
 			if (!m?.imsi)
@@ -330,7 +337,18 @@ export function create(o)
 
 		return { imsi: m.imsi, imei: m.imei, instance: m.instance, mnc_len: o.mnc_len ?? m.mnc_len ?? home_mnc_len(m),
 		         fam: fam, ue_addr: ue, pcscf: p, pcscfs: cand, pani: pani, prof: profile_of(m),
-		         vrf: acc ? acc.bind : o.vrf, vowifi: !!acc };
+		         vrf: acc ? acc.bind : o.vrf, vowifi: !!acc, way: way };
+	};
+	// the first way that works; none: every way's reason
+	let discover = (light) => {
+		let why = [];
+		for (let w in ways) {
+			let e = discover_way(w, light);
+			if (!e.error)
+				return e;
+			push(why, (length(ways) > 1) ? sprintf('%s: %s', w, e.error) : e.error);
+		}
+		return { error: join('; ', why) };
 	};
 
 	// ---- one registration's transport --------------------------------------------
@@ -559,7 +577,14 @@ export function create(o)
 	register = () => {
 		if (self.state == 'stopped')
 			return;
-		let env = discover();
+		// after the start the preferred way gets o.start_grace_s (60 s) to come
+		// up (the tunnel takes a while) before a fallback way is taken
+		let in_grace = (length(ways) > 1 && !ever_reg && time() - started_at < (o.start_grace_s ?? 60));
+		let env = in_grace ? discover_way(ways[0]) : discover();
+		if (env.error && in_grace) {
+			self.state = 'down';
+			return set_timer('reg', 5000, register);
+		}
 		if (env.error) {
 			self.state = 'down';
 			log('warn', sprintf('ue: %s; again in %d s', env.error, retry / 1000));
@@ -601,6 +626,7 @@ export function create(o)
 			let old = cur;
 			cur = r;
 			self.state = 'registered';
+			ever_reg = true;
 			log('info', sprintf('ue: registered as %s, expires %s s', impu(), r.res.expires ?? '?'));
 			for (let sa in r.reg.sa_set?.sas ?? [])
 				log('debug', sprintf('ue: ESP-SA "%s","%s","%s","0x%08x","AES-CBC [RFC3602]","0x%s","HMAC-SHA-1-96 [RFC2404]","0x%s"',
@@ -711,20 +737,50 @@ export function create(o)
 	};
 
 	// a new address or P-CSCF on the PDN (re-attach), or the PDN gone: start over
+	const WAY_NAME = { vowifi: 'access (VoWiFi)', pdn: 'PDN' };
+	let back_since = null;
 	let watch;
 	watch = () => {
 		set_timer('watch', 20000, watch);
 		if (!cur || self.state != 'registered' || busy())
 			return;
-		let env = discover(true);
-		// the P-CSCF in use no longer among the PDN's counts as a change
+		let way = cur.env.way ?? ways[0];
+		let env = discover_way(way, true);
+		// the P-CSCF in use no longer among the PDN's counts as a change;
+		// register() then takes the next way that works (the fallback)
 		if (env.error || env.ue_addr != cur.env.ue_addr || index(env.pcscfs, cur.env.pcscf) < 0) {
-			log('warn', sprintf('ue: the IMS %s changed (%s); registering again', o.access ? 'access (VoWiFi)' : 'PDN',
+			log('warn', sprintf('ue: the IMS %s changed (%s); registering again', WAY_NAME[way] ?? way,
 				env.error ?? sprintf('%s via %s', env.ue_addr, env.pcscf)));
 			let old = cur;
 			cur = null;
+			back_since = null;
 			drop_reg(old, false, () => register());
+			return;
 		}
+		// on a fallback: back to a preferred way once it has worked for
+		// o.return_s (default 60 s) — not at its first sign of life
+		let better = null;
+		for (let w in ways) {
+			if (w == way)
+				break;
+			if (!discover_way(w, true).error) {
+				better = w;
+				break;
+			}
+		}
+		if (!better) {
+			back_since = null;
+			return;
+		}
+		back_since ??= time();
+		if (time() - back_since < (o.return_s ?? 60))
+			return;
+		log('info', sprintf('ue: %s works again; moving the registration back from %s', WAY_NAME[better] ?? better,
+			WAY_NAME[way] ?? way));
+		let old = cur;
+		cur = null;
+		back_since = null;
+		drop_reg(old, false, () => register());
 	};
 
 	// ---- calls ----------------------------------------------------------------------
@@ -842,9 +898,15 @@ export function create(o)
 		state: self.state, ue_addr: cur?.env?.ue_addr, pcscf: cur?.env?.pcscf, impu: impu(),
 		expires: cur?.res?.expires, ports: cur?.pair, calls: length(keys(calls)),
 		profile: prof.name, reg_event: cur?.sub?.state, smsip: !!o.smsip, sec: cur?.res?.sec,
+		// the way in use: vowifi or volte (the IMS PDN); null when not registered
+		access: cur?.env?.way ? ((cur.env.way == 'vowifi') ? 'vowifi' : 'volte') : null,
+		ways: ways,
 	});
 
 	self.profile = () => prof;
+
+	// the VRF of the way in use (the relay's IMS side follows it)
+	self.vrf = () => cur?.env?.vrf;
 
 	// register now instead of at the next retry: the access came up
 	// (sipd, once the VoWiFi tunnel stands)

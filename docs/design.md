@@ -440,6 +440,23 @@ eSIM profile, remote SIM) the instance ends in order and procd starts it
 again for the new card. HW so far: one line on the NR7101 (the derived
 names of line 0 are the ones it always had).
 
+### 5.12 VoWiFi and the IMS PDN as each other's fallback (2026-11-21)
+
+`option access` names the ways in order of preference: `vowifi pdn` (or
+`auto`), `pdn vowifi`, or one alone. line_ue registers over the first way
+that works (`discover`: the tunnel up / the PDN up with an address and a
+P-CSCF). Registered, its 20 s watch checks the way in use — gone or
+changed: drop the registration, register again, which takes the next way —
+and, on a fallback, the preferred ways: one that has worked for
+`return_s` (60 s) takes the registration back; no flapping on its first
+sign of life. Status `access` names the way in use (vowifi / volte), the
+relay's IMS side follows its VRF. The move back waits for a call in progress
+to end (the watch skips while one runs); a call on a way that fails ends
+with it (no handover). After a start the preferred way gets
+`start_grace_s` (60 s) before a fallback is taken, so a start does not
+register over the PDN only because the tunnel is still coming up. The tunnel is kept up while the PDN carries the registration (the
+controller's own retries).
+
 ### 5.11 VoWiFi without a modem (2026-11-21)
 
 VoWiFi needs nothing of a modem but its USIM: the AUTHENTICATE for EAP-AKA

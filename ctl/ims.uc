@@ -707,7 +707,7 @@ function cmd_setup(ctx, modem, m, opts)
 	// ims_modem asks for it, so a later run adds them to a working setup
 	let im = LN.im;
 	let vw = null;
-	if (opts.vowifi !== false && (opts.vowifi || im.access == 'vowifi' ||
+	if (opts.vowifi !== false && (opts.vowifi || match(sprintf('%s', im.access ?? ''), /vowifi|auto/) ||
 	    fs.stat('/usr/share/wwand-ims/vowifi_lazy.uc') != null))
 		vw = { table: RES.vowifi_table, dev: RES.vowifi_dev,
 		       iface: RES.vowifi_iface, if_id: RES.vowifi_if_id, mtu: +(im.vowifi_mtu ?? 1280) };
